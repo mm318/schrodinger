@@ -8,6 +8,10 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    const zzplot_dep = b.dependency("zzplot", .{
+        .target = target,
+        .optimize = optimize,
+    });
 
     // We will create a module for our other entry point, 'main.zig'.
     const exe_mod = b.createModule(.{
@@ -15,6 +19,8 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    exe_mod.addImport("zzplot", zzplot_dep.module("zzplot"));
+    exe_mod.addIncludePath(zzplot_dep.artifact("zzplot").getEmittedIncludeTree());
     exe_mod.addIncludePath(arkode_dep.artifact("arkode").getEmittedIncludeTree());
     exe_mod.linkLibrary(arkode_dep.artifact("arkode"));
 

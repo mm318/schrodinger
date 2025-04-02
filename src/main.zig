@@ -7,6 +7,8 @@ const c = @cImport({
     @cInclude("arkode/arkode_arkstep.h"); // prototypes for ARKStep fcts., consts
 });
 
+const plotter = @import("plot.zig");
+
 const SundialsError = error{
     ArgCorrupt, // argument provided is NULL or corrupted
     ArgIncompatible, // argument provided is not compatible
@@ -98,7 +100,7 @@ const SolverError = SundialsError || ArkodeError;
 
 fn checkedCall(func: anytype, args: anytype) SolverError!void {
     const result = @call(.auto, func, args);
-    if (result < c.SUN_SUCCESS and result < c.ARK_SUCCESS) {
+    if (result < c.SUN_SUCCESS or result < c.ARK_SUCCESS) {
         return switch (result) {
             c.SUN_ERR_ARG_CORRUPT => SolverError.ArgCorrupt,
             c.SUN_ERR_ARG_INCOMPATIBLE => SolverError.ArgIncompatible,
@@ -267,6 +269,10 @@ export fn Jac(
 }
 
 pub fn main() !void {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
     const T0: c.sunrealtype = 0.0; // initial time
     const Tf: c.sunrealtype = 1.0; // final time
     const Nt: usize = 10; // total number of output times
@@ -312,6 +318,22 @@ pub fn main() !void {
     try checkedCall(c.ARKodeSetJacTimes, .{ arkode_mem, null, &Jac }); // Set the Jacobian routine
     try checkedCall(c.ARKodeSetLinear, .{ arkode_mem, 0 }); // Specify linearly implicit RHS, with non-time-dependent Jacobian
 
+    const data = c.N_VGetArrayPointer(y);
+
+    var x = try std.ArrayList(c.sunrealtype).initCapacity(allocator, N);
+    for (0..N) |i| {
+        try x.append(udata.dx * @as(c.sunrealtype, @floatFromInt(i)));
+    }
+
+    var y_all = try std.ArrayList(std.ArrayList(c.sunrealtype)).initCapacity(allocator, Nt);
+    var y_init = try std.ArrayList(c.sunrealtype).initCapacity(allocator, N);
+    for (0..N) |i| {
+        try y_init.append(data[i]);
+    }
+    try y_all.append(y_init);
+
+    const plot_thread = try std.Thread.spawn(.{}, plotter.plot, .{ allocator, &x.items, &y_all.items });
+
     var t = T0;
     const dTout = (Tf - T0) / Nt;
     var tout = T0 + dTout;
@@ -331,7 +353,18 @@ pub fn main() !void {
         std.log.info("  {d:10.6}  {d:10.6}", .{ t, @sqrt(c.N_VDotProd(y, y) / N) });
         tout += dTout;
         tout = if (tout > Tf) Tf else tout;
+
+        var y_curr = try std.ArrayList(c.sunrealtype).initCapacity(allocator, N);
+        for (0..N) |i| {
+            try y_curr.append(data[i]);
+        }
+        try y_all.append(y_curr);
     }
+
+    const y_final = y_all.getLast();
+    std.log.info("", .{});
+    std.log.info("u_max = {d:10.6}", .{std.mem.max(c.sunrealtype, y_final.items)});
+    std.log.info("u_min = {d:10.6}\n", .{std.mem.min(c.sunrealtype, y_final.items)});
 
     // Print some final statistics
     var nst: c_long = undefined;
@@ -367,6 +400,8 @@ pub fn main() !void {
     std.log.info("   Total number of Newton iterations = {}", .{nni});
     std.log.info("   Total number of nonlinear solver convergence failures = {}", .{ncfn});
     std.log.info("   Total number of error test failures = {}", .{netf});
+
+    plot_thread.join();
 }
 
 test "simple test" {
