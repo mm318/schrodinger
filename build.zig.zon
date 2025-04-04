@@ -1,0 +1,24 @@
+.{
+    .name = .schrodinger,
+    .version = "0.0.0",
+    .fingerprint = 0x7500392784adb00f, // Changing this has security and trust implications.
+
+    .minimum_zig_version = "0.14.0",
+
+    .dependencies = .{
+        .arkode = .{
+            .url = "https://github.com/mm318/arkode-zig/archive/26a51b3243c6f9eaa45d51db2f3ac778f8ca8007.zip",
+            .hash = "arkode-6.2.1-5YSPKHhZlgB-Q06OhXQLj_pN0D123_Xtjv0JDEb3xR1W",
+        },
+        .zzplot = .{
+            .url = "https://github.com/mm318/zzplot/archive/bb965bcfa37d06b79cd491d1bdf333865a2cd40f.zip",
+            .hash = "zzplot-0.0.0-wkYF6Wyl2ABjDxtUL22UakhtBUCfVSy7tznh7UsmRU04",
+        },
+    },
+
+    .paths = .{
+        "src",
+        "build.zig",
+        "build.zig.zon",
+    },
+}
