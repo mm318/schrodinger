@@ -368,6 +368,7 @@ pub fn main() !void {
     std.log.info("   -------------------------", .{});
     std.log.info("  {d:10.6}  {d:10.6}", .{ t, @sqrt(s.N_VDotProd(y, y) / @as(f64, @floatFromInt(domain.size()))) });
 
+    var timer = try std.time.Timer.start();
     for (0..Nt) |_| {
         checkedCall(s.ARKodeEvolve, .{ arkode_mem, tout, y, &t, s.ARK_NORMAL }) catch {
             std.log.err("Solver failure, stopping integration", .{});
@@ -379,6 +380,9 @@ pub fn main() !void {
         tout += dTout;
         tout = if (tout > Tf) Tf else tout;
     }
+    const elapsed: f64 = @floatFromInt(timer.read());
+    std.log.info("", .{});
+    std.log.info("Time elapsed is: {d:.3}ms\n", .{elapsed / std.time.ns_per_ms});
 
     // Print some final statistics
     var nst: c_long = undefined;
