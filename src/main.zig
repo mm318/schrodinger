@@ -256,16 +256,16 @@ const DomainData = struct {
 
 export fn f(
     t: s.sunrealtype,
-    y: s.N_Vector,
-    ydot: s.N_Vector,
+    u: s.N_Vector,
+    u_dot: s.N_Vector,
     domain_data: ?*anyopaque,
 ) i32 {
     _ = t;
 
     const p: *const DomainData = @alignCast(@ptrCast(domain_data)); // access problem data
-    const Y = checkedMemOp(s.N_VGetArrayPointer, .{y}) catch return 1;
-    const Ydot = checkedMemOp(s.N_VGetArrayPointer, .{ydot}) catch return 1;
-    s.N_VConst(0.0, ydot); // Initialize ydot to zero
+    const U = checkedMemOp(s.N_VGetArrayPointer, .{u}) catch return 1;
+    const Udot = checkedMemOp(s.N_VGetArrayPointer, .{u_dot}) catch return 1;
+    s.N_VConst(0.0, u_dot); // Initialize ydot to zero
 
     // iterate over domain, computing all equations
     const c1x: s.sunrealtype = p.kx / p.dx / p.dx;
@@ -275,24 +275,71 @@ export fn f(
     const c1z: s.sunrealtype = p.kz / p.dz / p.dz;
     const c2z: s.sunrealtype = -2.0 * c1z;
 
+    // for (0..@intCast(p.Nz)) |iz| {
+    //     for (0..@intCast(p.Ny)) |iy| {
+    //         for (0..@intCast(p.Nx)) |ix| {
+    //             const i = p.coord2index(.{ .ix = ix, .iy = iy, .iz = iz });
+    //             if (ix == 0 or ix == p.Nx - 1 or iy == 0 or iy == p.Ny - 1 or iz == 0 or iz == p.Nz - 1) {
+    //                 Udot[i] = 0.0; // boundary condition: adiabatic
+    //             } else {
+    //                 Udot[i] =
+    //                     c1x * U[p.coord2index(.{ .ix = ix - 1, .iy = iy, .iz = iz })] +
+    //                     c2x * U[i] +
+    //                     c1x * U[p.coord2index(.{ .ix = ix + 1, .iy = iy, .iz = iz })] +
+    //                     c1y * U[p.coord2index(.{ .ix = ix, .iy = iy - 1, .iz = iz })] +
+    //                     c2y * U[i] +
+    //                     c1y * U[p.coord2index(.{ .ix = ix, .iy = iy + 1, .iz = iz })] +
+    //                     c1z * U[p.coord2index(.{ .ix = ix, .iy = iy, .iz = iz - 1 })] +
+    //                     c2z * U[i] +
+    //                     c1z * U[p.coord2index(.{ .ix = ix, .iy = iy, .iz = iz + 1 })];
+    //             }
+    //         }
+    //     }
+    // }
+
+    // for (0..p.size()) |i| {
+    //     const c = p.index2coord(i);
+    //     if (c.ix == 0 or c.ix == p.Nx - 1 or c.iy == 0 or c.iy == p.Ny - 1 or c.iz == 0 or c.iz == p.Nz - 1) {
+    //         Udot[i] = 0.0; // boundary condition: adiabatic
+    //     } else {
+    //         const x_prev = i - 1;
+    //         const x_next = i + 1;
+    //         const y_prev = i - p.Nx;
+    //         const y_next = i + p.Nx;
+    //         const z_prev = i - (p.Nx * p.Ny);
+    //         const z_next = i + (p.Nx * p.Ny);
+    //         Udot[i] =
+    //             c1x * U[x_prev] + c2x * U[i] + c1x * U[x_next] +
+    //             c1y * U[y_prev] + c2y * U[i] + c1y * U[y_next] +
+    //             c1z * U[z_prev] + c2z * U[i] + c1z * U[z_next];
+    //     }
+    // }
+
+    var i: isize = 0;
+    var x_prev = i - 1;
+    var x_next = i + 1;
+    var y_prev = i - @as(isize, @intCast(p.Nx));
+    var y_next = i + @as(isize, @intCast(p.Nx));
+    var z_prev = i - @as(isize, @intCast(p.Nx * p.Ny));
+    var z_next = i + @as(isize, @intCast(p.Nx * p.Ny));
     for (0..@intCast(p.Nz)) |iz| {
         for (0..@intCast(p.Ny)) |iy| {
             for (0..@intCast(p.Nx)) |ix| {
-                const i = p.coord2index(.{ .ix = ix, .iy = iy, .iz = iz });
                 if (ix == 0 or ix == p.Nx - 1 or iy == 0 or iy == p.Ny - 1 or iz == 0 or iz == p.Nz - 1) {
-                    Ydot[i] = 0.0; // boundary condition: adiabatic
+                    Udot[@intCast(i)] = 0.0; // boundary condition: adiabatic
                 } else {
-                    Ydot[i] =
-                        c1x * Y[p.coord2index(.{ .ix = ix - 1, .iy = iy, .iz = iz })] +
-                        c2x * Y[i] +
-                        c1x * Y[p.coord2index(.{ .ix = ix + 1, .iy = iy, .iz = iz })] +
-                        c1y * Y[p.coord2index(.{ .ix = ix, .iy = iy - 1, .iz = iz })] +
-                        c2y * Y[i] +
-                        c1y * Y[p.coord2index(.{ .ix = ix, .iy = iy + 1, .iz = iz })] +
-                        c1z * Y[p.coord2index(.{ .ix = ix, .iy = iy, .iz = iz - 1 })] +
-                        c2z * Y[i] +
-                        c1z * Y[p.coord2index(.{ .ix = ix, .iy = iy, .iz = iz + 1 })];
+                    Udot[@intCast(i)] =
+                        c1x * U[@intCast(x_prev)] + c2x * U[@intCast(i)] + c1x * U[@intCast(x_next)] +
+                        c1y * U[@intCast(y_prev)] + c2y * U[@intCast(i)] + c1y * U[@intCast(y_next)] +
+                        c1z * U[@intCast(z_prev)] + c2z * U[@intCast(i)] + c1z * U[@intCast(z_next)];
                 }
+                i += 1;
+                x_prev += 1;
+                x_next += 1;
+                y_prev += 1;
+                y_next += 1;
+                z_prev += 1;
+                z_next += 1;
             }
         }
     }
@@ -302,7 +349,7 @@ export fn f(
         .iy = @intCast(@divTrunc(p.Ny, 2)),
         .iz = @intCast(@divTrunc(p.Nz, 2)),
     }); // heat source location
-    Ydot[isrc] += 0.01 / ((p.dx + p.dy + p.dz) / 3); // source term
+    Udot[isrc] += 0.01 / ((p.dx + p.dy + p.dz) / 3); // source term
 
     return 0; // return with success
 }
@@ -382,7 +429,7 @@ pub fn main() !void {
     }
     const elapsed: f64 = @floatFromInt(timer.read());
     std.log.info("", .{});
-    std.log.info("Time elapsed is: {d:.3}ms\n", .{elapsed / std.time.ns_per_ms});
+    std.log.info("Time elapsed is: {d:.3} s", .{elapsed / std.time.ns_per_s});
 
     // Print some final statistics
     var nst: c_long = undefined;
@@ -441,5 +488,88 @@ test "index2coord" {
         const c = p.index2coord(i);
         const i_new = p.coord2index(c);
         try std.testing.expectEqual(i, i_new);
+    }
+}
+
+test "incremental index" {
+    var seed: u64 = undefined;
+    try std.posix.getrandom(std.mem.asBytes(&seed));
+    var prng = std.Random.DefaultPrng.init(seed);
+    const rand = prng.random();
+
+    const N = rand.intRangeAtMost(usize, 101, 201);
+    const p = DomainData.generate(1.0, N);
+
+    for (0..100) |_| {
+        const i = rand.uintLessThan(usize, p.size());
+        const c = p.index2coord(i);
+        if (c.ix > 0) {
+            const x_prev = i - 1;
+            try std.testing.expectEqual(p.coord2index(.{ .ix = c.ix - 1, .iy = c.iy, .iz = c.iz }), x_prev);
+        }
+        if (c.ix + 1 < p.Nx) {
+            const x_next = i + 1;
+            try std.testing.expectEqual(p.coord2index(.{ .ix = c.ix + 1, .iy = c.iy, .iz = c.iz }), x_next);
+        }
+        if (c.iy > 0) {
+            const y_prev = i - p.Nx;
+            try std.testing.expectEqual(p.coord2index(.{ .ix = c.ix, .iy = c.iy - 1, .iz = c.iz }), y_prev);
+        }
+        if (c.iy + 1 < p.Ny) {
+            const y_next = i + p.Nx;
+            try std.testing.expectEqual(p.coord2index(.{ .ix = c.ix, .iy = c.iy + 1, .iz = c.iz }), y_next);
+        }
+        if (c.iz > 0) {
+            const z_prev = i - (p.Nx * p.Ny);
+            try std.testing.expectEqual(p.coord2index(.{ .ix = c.ix, .iy = c.iy, .iz = c.iz - 1 }), z_prev);
+        }
+        if (c.iz + 1 < p.Nz) {
+            const z_next = i + (p.Nx * p.Ny);
+            try std.testing.expectEqual(p.coord2index(.{ .ix = c.ix, .iy = c.iy, .iz = c.iz + 1 }), z_next);
+        }
+    }
+}
+
+test "incremental index 2" {
+    const p = DomainData.generate(1.0, 201);
+
+    var i: isize = 0;
+    var x_prev = i - 1;
+    var x_next = i + 1;
+    var y_prev = i - @as(isize, @intCast(p.Nx));
+    var y_next = i + @as(isize, @intCast(p.Nx));
+    var z_prev = i - @as(isize, @intCast(p.Nx * p.Ny));
+    var z_next = i + @as(isize, @intCast(p.Nx * p.Ny));
+    for (0..@intCast(p.Nz)) |iz| {
+        for (0..@intCast(p.Ny)) |iy| {
+            for (0..@intCast(p.Nx)) |ix| {
+                if (ix > 0) {
+                    try std.testing.expectEqual(p.coord2index(.{ .ix = ix - 1, .iy = iy, .iz = iz }), @as(usize, @intCast(x_prev)));
+                }
+                if (ix + 1 < p.Nx) {
+                    try std.testing.expectEqual(p.coord2index(.{ .ix = ix + 1, .iy = iy, .iz = iz }), @as(usize, @intCast(x_next)));
+                }
+                if (iy > 0) {
+                    try std.testing.expectEqual(p.coord2index(.{ .ix = ix, .iy = iy - 1, .iz = iz }), @as(usize, @intCast(y_prev)));
+                }
+                if (iy + 1 < p.Ny) {
+                    try std.testing.expectEqual(p.coord2index(.{ .ix = ix, .iy = iy + 1, .iz = iz }), @as(usize, @intCast(y_next)));
+                }
+                if (iz > 0) {
+                    try std.testing.expectEqual(p.coord2index(.{ .ix = ix, .iy = iy, .iz = iz - 1 }), @as(usize, @intCast(z_prev)));
+                }
+                if (iz + 1 < p.Nz) {
+                    try std.testing.expectEqual(p.coord2index(.{ .ix = ix, .iy = iy, .iz = iz + 1 }), @as(usize, @intCast(z_next)));
+                }
+
+                i += 1;
+                x_prev += 1;
+                x_next += 1;
+                y_prev += 1;
+                y_next += 1;
+                z_prev += 1;
+                z_next += 1;
+            }
+        }
     }
 }
