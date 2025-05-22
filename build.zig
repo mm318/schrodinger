@@ -20,8 +20,6 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     exe_mod.addImport("zzplot", zzplot_dep.module("zzplot"));
-    exe_mod.addIncludePath(zzplot_dep.artifact("zzplot").getEmittedIncludeTree());
-    exe_mod.addIncludePath(arkode_dep.artifact("arkode").getEmittedIncludeTree());
     exe_mod.linkLibrary(arkode_dep.artifact("arkode"));
 
     // This creates another `std.Build.Step.Compile` that builds an executable
