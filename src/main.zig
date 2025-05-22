@@ -1,6 +1,8 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
+const VtuWriter = @import("vtu_writer");
+
 const s = @cImport({
     @cInclude("sundials/sundials_types.h"); // defs. of sunrealtype, sunindextype, etc
     @cInclude("sunlinsol/sunlinsol_pcg.h"); // access to PCG SUNLinearSolver
@@ -413,7 +415,7 @@ pub fn main() !void {
     std.log.info("", .{});
     std.log.info("        t      ||u||_rms", .{});
     std.log.info("   -------------------------", .{});
-    std.log.info("  {d:10.6}  {d:10.6}", .{ t, @sqrt(s.N_VDotProd(y, y) / @as(f64, @floatFromInt(domain.size()))) });
+    std.log.info("  {d:10.6}  {e:10.4}", .{ t, @sqrt(s.N_VDotProd(y, y) / @as(f64, @floatFromInt(domain.size()))) });
 
     var timer = try std.time.Timer.start();
     for (0..Nt) |_| {
@@ -423,7 +425,7 @@ pub fn main() !void {
         };
 
         // successful solve: update output time
-        std.log.info("  {d:10.6}  {d:10.6}", .{ t, @sqrt(s.N_VDotProd(y, y) / @as(f64, @floatFromInt(domain.size()))) });
+        std.log.info("  {d:10.6}  {e:10.4}", .{ t, @sqrt(s.N_VDotProd(y, y) / @as(f64, @floatFromInt(domain.size()))) });
         tout += dTout;
         tout = if (tout > Tf) Tf else tout;
     }

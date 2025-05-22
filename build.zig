@@ -8,7 +8,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    const zzplot_dep = b.dependency("zzplot", .{
+    const vtu_dep = b.dependency("vtu_writer", .{
         .target = target,
         .optimize = optimize,
     });
@@ -19,9 +19,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    exe_mod.addImport("zzplot", zzplot_dep.module("zzplot"));
-    exe_mod.addIncludePath(zzplot_dep.artifact("zzplot").getEmittedIncludeTree());
-    exe_mod.addIncludePath(arkode_dep.artifact("arkode").getEmittedIncludeTree());
+    exe_mod.addImport("vtu_writer", vtu_dep.module("vtu_writer"));
     exe_mod.linkLibrary(arkode_dep.artifact("arkode"));
 
     // This creates another `std.Build.Step.Compile` that builds an executable
