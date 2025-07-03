@@ -201,7 +201,7 @@ fn checkedMemOp(func: anytype, args: anytype) !funcPtrRetType(func) {
     return result;
 }
 
-const DomainData = struct {
+const Domain = struct {
     Lx: s.sunrealtype, // physical size of domain in x direction
     Ly: s.sunrealtype, // physical size of domain in x direction
     Lz: s.sunrealtype, // physical size of domain in x direction
@@ -221,7 +221,7 @@ const DomainData = struct {
         iz: usize,
     };
 
-    fn generate(L: s.sunrealtype, N: usize) DomainData {
+    fn init(L: s.sunrealtype, N: usize) Domain {
         return .{
             .Lx = L,
             .Ly = L,
@@ -235,18 +235,18 @@ const DomainData = struct {
         };
     }
 
-    fn size(self: DomainData) usize {
+    fn size(self: Domain) usize {
         return self.Nx * self.Ny * self.Nz;
     }
 
-    fn coord2index(self: DomainData, c: Coord) usize {
+    fn coord2index(self: Domain, c: Coord) usize {
         std.debug.assert(c.ix < self.Nx);
         std.debug.assert(c.iy < self.Ny);
         std.debug.assert(c.iz < self.Nz);
         return c.iz * (self.Nx * self.Ny) + c.iy * self.Nx + c.ix;
     }
 
-    fn index2coord(self: DomainData, i: usize) Coord {
+    fn index2coord(self: Domain, i: usize) Coord {
         std.debug.assert(i < self.size());
         return .{
             .ix = i % self.Nx,
@@ -264,7 +264,7 @@ export fn f(
 ) i32 {
     _ = t;
 
-    const p: *const DomainData = @alignCast(@ptrCast(domain_data)); // access problem data
+    const p: *const Domain = @alignCast(@ptrCast(domain_data)); // access problem data
     const U = checkedMemOp(s.N_VGetArrayPointer, .{u}) catch return 1;
     const Udot = checkedMemOp(s.N_VGetArrayPointer, .{u_dot}) catch return 1;
     s.N_VConst(0.0, u_dot); // Initialize ydot to zero
@@ -356,18 +356,93 @@ export fn f(
     return 0; // return with success
 }
 
-pub fn main() !void {
-    // var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    // defer arena.deinit();
-    // const allocator = arena.allocator();
+const Solver = struct {
+    ctx: s.SUNContext,
+    y: s.N_Vector,
+    arkode_mem: ?*anyopaque,
+    ls: s.SUNLinearSolver,
 
-    var domain = DomainData.generate(1.0, 101);
+    fn init(domain: *const Domain, T0: s.sunrealtype) !Solver {
+        const rtol: s.sunrealtype = 1e-6; // relative tolerance
+        const atol: s.sunrealtype = 1e-10; // absolute tolerance
+
+        var self: Solver = undefined;
+
+        // Create the SUNDIALS context object for this simulation
+        try checkedCall(s.SUNContext_Create, .{ s.SUN_COMM_NULL, &self.ctx });
+
+        // Create serial vector for solution
+        self.y = try checkedMemOp(s.N_VNew_Serial, .{ @as(s.sunindextype, @intCast(domain.size())), self.ctx });
+        s.N_VConst(0.0, self.y);
+
+        // Call ARKStepCreate to initialize the ARK timestepper module and
+        // specify the right-hand side function in y'=f(t,y), the initial time
+        // T0, and the initial dependent variable vector y.  Note: since this
+        // problem is fully implicit, we set f_E to NULL and f_I to f.
+        self.arkode_mem = try checkedMemOp(s.ARKStepCreate, .{ null, &f, T0, self.y, self.ctx });
+
+        // Set routines
+        try checkedCall(s.ARKodeSetUserData, .{ self.arkode_mem, @as(?*anyopaque, @ptrCast(@constCast(domain))) }); // Pass udata to user functions
+        try checkedCall(s.ARKodeSetMaxNumSteps, .{ self.arkode_mem, 10000 }); // Increase max num steps
+        try checkedCall(s.ARKodeSetPredictorMethod, .{ self.arkode_mem, 1 }); // Specify maximum-order predictor
+        try checkedCall(s.ARKodeSStolerances, .{ self.arkode_mem, rtol, atol }); // Specify tolerances
+        self.ls = try checkedMemOp(s.SUNLinSol_PCG, .{ self.y, 0, @as(i32, @intCast(domain.size())), self.ctx }); // Initialize PCG solver -- no preconditioning, with up to N iterations
+        try checkedCall(s.ARKodeSetLinearSolver, .{ self.arkode_mem, self.ls, null }); // Attach linear solver to ARKODE
+        try checkedCall(s.ARKodeSetLinear, .{ self.arkode_mem, 0 }); // Specify linearly implicit RHS, with non-time-dependent Jacobian
+
+        return self;
+    }
+
+    fn printStats(self: *const Solver) void {
+        var nst: c_long = undefined;
+        var nst_a: c_long = undefined;
+        var nfe: c_long = undefined;
+        var nfi: c_long = undefined;
+        var nsetups: c_long = undefined;
+        var nli: c_long = undefined;
+        var nJv: c_long = undefined;
+        var nlcf: c_long = undefined;
+        var nni: c_long = undefined;
+        var ncfn: c_long = undefined;
+        var netf: c_long = undefined;
+        checkedCall(s.ARKodeGetNumSteps, .{ self.arkode_mem, &nst }) catch @panic("wtf");
+        checkedCall(s.ARKodeGetNumStepAttempts, .{ self.arkode_mem, &nst_a }) catch @panic("wtf");
+        checkedCall(s.ARKodeGetNumRhsEvals, .{ self.arkode_mem, 0, &nfe }) catch @panic("wtf");
+        checkedCall(s.ARKodeGetNumRhsEvals, .{ self.arkode_mem, 1, &nfi }) catch @panic("wtf");
+        checkedCall(s.ARKodeGetNumLinSolvSetups, .{ self.arkode_mem, &nsetups }) catch @panic("wtf");
+        checkedCall(s.ARKodeGetNumErrTestFails, .{ self.arkode_mem, &netf }) catch @panic("wtf");
+        checkedCall(s.ARKodeGetNumNonlinSolvIters, .{ self.arkode_mem, &nni }) catch @panic("wtf");
+        checkedCall(s.ARKodeGetNumNonlinSolvConvFails, .{ self.arkode_mem, &ncfn }) catch @panic("wtf");
+        checkedCall(s.ARKodeGetNumLinIters, .{ self.arkode_mem, &nli }) catch @panic("wtf");
+        checkedCall(s.ARKodeGetNumJtimesEvals, .{ self.arkode_mem, &nJv }) catch @panic("wtf");
+        checkedCall(s.ARKodeGetNumLinConvFails, .{ self.arkode_mem, &nlcf }) catch @panic("wtf");
+        std.log.info("", .{});
+        std.log.info("Final Solver Statistics:", .{});
+        std.log.info("   Internal solver steps = {} (attempted = {})", .{ nst, nst_a });
+        std.log.info("   Total RHS evals:  Fe = {},  Fi = {}", .{ nfe, nfi });
+        std.log.info("   Total linear solver setups = {}", .{nsetups});
+        std.log.info("   Total linear iterations = {}", .{nli});
+        std.log.info("   Total number of Jacobian-vector products = {}", .{nJv});
+        std.log.info("   Total number of linear solver convergence failures = {}", .{nlcf});
+        std.log.info("   Total number of Newton iterations = {}", .{nni});
+        std.log.info("   Total number of nonlinear solver convergence failures = {}", .{ncfn});
+        std.log.info("   Total number of error test failures = {}", .{netf});
+    }
+
+    fn deinit(self: *Solver) void {
+        _ = s.SUNContext_Free(&self.ctx);
+        s.N_VDestroy(self.y);
+        s.ARKodeFree(&self.arkode_mem);
+        _ = s.SUNLinSolFree(self.ls);
+    }
+};
+
+pub fn main() !void {
+    var domain = Domain.init(1.0, 101);
 
     const T0: s.sunrealtype = 0.0; // initial time
     const Tf: s.sunrealtype = 1.0; // final time
     const Nt: usize = 10; // total number of output times
-    const rtol: s.sunrealtype = 1e-6; // relative tolerance
-    const atol: s.sunrealtype = 1e-10; // absolute tolerance
 
     // Initial problem output
     std.log.info("3D Heat PDE test problem:", .{});
@@ -381,32 +456,8 @@ pub fn main() !void {
     std.log.info("  diffusion coefficient (y direction): k_y = {}", .{domain.ky});
     std.log.info("  diffusion coefficient (z direction): k_z = {}", .{domain.kz});
 
-    // Create the SUNDIALS context object for this simulation
-    var ctx: s.SUNContext = undefined;
-    try checkedCall(s.SUNContext_Create, .{ s.SUN_COMM_NULL, &ctx });
-    defer _ = s.SUNContext_Free(&ctx);
-
-    // Create serial vector for solution
-    const y = try checkedMemOp(s.N_VNew_Serial, .{ @as(s.sunindextype, @intCast(domain.size())), ctx });
-    defer s.N_VDestroy(y);
-    s.N_VConst(0.0, y);
-
-    // Call ARKStepCreate to initialize the ARK timestepper module and
-    // specify the right-hand side function in y'=f(t,y), the initial time
-    // T0, and the initial dependent variable vector y.  Note: since this
-    // problem is fully implicit, we set f_E to NULL and f_I to f.
-    var arkode_mem: ?*anyopaque = try checkedMemOp(s.ARKStepCreate, .{ null, &f, T0, y, ctx });
-    defer s.ARKodeFree(&arkode_mem);
-
-    // Set routines
-    try checkedCall(s.ARKodeSetUserData, .{ arkode_mem, @as(?*anyopaque, @ptrCast(&domain)) }); // Pass udata to user functions
-    try checkedCall(s.ARKodeSetMaxNumSteps, .{ arkode_mem, 10000 }); // Increase max num steps
-    try checkedCall(s.ARKodeSetPredictorMethod, .{ arkode_mem, 1 }); // Specify maximum-order predictor
-    try checkedCall(s.ARKodeSStolerances, .{ arkode_mem, rtol, atol }); // Specify tolerances
-    const LS = try checkedMemOp(s.SUNLinSol_PCG, .{ y, 0, @as(i32, @intCast(domain.size())), ctx }); // Initialize PCG solver -- no preconditioning, with up to N iterations
-    defer _ = s.SUNLinSolFree(LS);
-    try checkedCall(s.ARKodeSetLinearSolver, .{ arkode_mem, LS, null }); // Attach linear solver to ARKODE
-    try checkedCall(s.ARKodeSetLinear, .{ arkode_mem, 0 }); // Specify linearly implicit RHS, with non-time-dependent Jacobian
+    var solver = try Solver.init(&domain, T0);
+    defer solver.deinit();
 
     var t = T0;
     const dTout = (Tf - T0) / Nt;
@@ -415,17 +466,17 @@ pub fn main() !void {
     std.log.info("", .{});
     std.log.info("        t      ||u||_rms", .{});
     std.log.info("   -------------------------", .{});
-    std.log.info("  {d:10.6}  {e:10.4}", .{ t, @sqrt(s.N_VDotProd(y, y) / @as(f64, @floatFromInt(domain.size()))) });
+    std.log.info("  {d:10.6}  {e:10.4}", .{ t, @sqrt(s.N_VDotProd(solver.y, solver.y) / @as(f64, @floatFromInt(domain.size()))) });
 
     var timer = try std.time.Timer.start();
     for (0..Nt) |_| {
-        checkedCall(s.ARKodeEvolve, .{ arkode_mem, tout, y, &t, s.ARK_NORMAL }) catch {
+        checkedCall(s.ARKodeEvolve, .{ solver.arkode_mem, tout, solver.y, &t, s.ARK_NORMAL }) catch {
             std.log.err("Solver failure, stopping integration", .{});
             break;
         };
 
         // successful solve: update output time
-        std.log.info("  {d:10.6}  {e:10.4}", .{ t, @sqrt(s.N_VDotProd(y, y) / @as(f64, @floatFromInt(domain.size()))) });
+        std.log.info("  {d:10.6}  {e:10.4}", .{ t, @sqrt(s.N_VDotProd(solver.y, solver.y) / @as(f64, @floatFromInt(domain.size()))) });
         tout += dTout;
         tout = if (tout > Tf) Tf else tout;
     }
@@ -434,39 +485,7 @@ pub fn main() !void {
     std.log.info("Time elapsed is: {d:.3} s", .{elapsed / std.time.ns_per_s});
 
     // Print some final statistics
-    var nst: c_long = undefined;
-    var nst_a: c_long = undefined;
-    var nfe: c_long = undefined;
-    var nfi: c_long = undefined;
-    var nsetups: c_long = undefined;
-    var nli: c_long = undefined;
-    var nJv: c_long = undefined;
-    var nlcf: c_long = undefined;
-    var nni: c_long = undefined;
-    var ncfn: c_long = undefined;
-    var netf: c_long = undefined;
-    try checkedCall(s.ARKodeGetNumSteps, .{ arkode_mem, &nst });
-    try checkedCall(s.ARKodeGetNumStepAttempts, .{ arkode_mem, &nst_a });
-    try checkedCall(s.ARKodeGetNumRhsEvals, .{ arkode_mem, 0, &nfe });
-    try checkedCall(s.ARKodeGetNumRhsEvals, .{ arkode_mem, 1, &nfi });
-    try checkedCall(s.ARKodeGetNumLinSolvSetups, .{ arkode_mem, &nsetups });
-    try checkedCall(s.ARKodeGetNumErrTestFails, .{ arkode_mem, &netf });
-    try checkedCall(s.ARKodeGetNumNonlinSolvIters, .{ arkode_mem, &nni });
-    try checkedCall(s.ARKodeGetNumNonlinSolvConvFails, .{ arkode_mem, &ncfn });
-    try checkedCall(s.ARKodeGetNumLinIters, .{ arkode_mem, &nli });
-    try checkedCall(s.ARKodeGetNumJtimesEvals, .{ arkode_mem, &nJv });
-    try checkedCall(s.ARKodeGetNumLinConvFails, .{ arkode_mem, &nlcf });
-    std.log.info("", .{});
-    std.log.info("Final Solver Statistics:", .{});
-    std.log.info("   Internal solver steps = {} (attempted = {})", .{ nst, nst_a });
-    std.log.info("   Total RHS evals:  Fe = {},  Fi = {}", .{ nfe, nfi });
-    std.log.info("   Total linear solver setups = {}", .{nsetups});
-    std.log.info("   Total linear iterations = {}", .{nli});
-    std.log.info("   Total number of Jacobian-vector products = {}", .{nJv});
-    std.log.info("   Total number of linear solver convergence failures = {}", .{nlcf});
-    std.log.info("   Total number of Newton iterations = {}", .{nni});
-    std.log.info("   Total number of nonlinear solver convergence failures = {}", .{ncfn});
-    std.log.info("   Total number of error test failures = {}", .{netf});
+    solver.printStats();
 }
 
 pub const std_options: std.Options = .{
@@ -483,7 +502,7 @@ test "index2coord" {
     const rand = prng.random();
 
     const N = rand.intRangeAtMost(usize, 101, 201);
-    const p = DomainData.generate(1.0, N);
+    const p = Domain.init(1.0, N);
 
     for (0..100) |_| {
         const i = rand.uintLessThan(usize, p.size());
@@ -500,7 +519,7 @@ test "incremental index" {
     const rand = prng.random();
 
     const N = rand.intRangeAtMost(usize, 101, 201);
-    const p = DomainData.generate(1.0, N);
+    const p = Domain.init(1.0, N);
 
     for (0..100) |_| {
         const i = rand.uintLessThan(usize, p.size());
@@ -533,7 +552,7 @@ test "incremental index" {
 }
 
 test "incremental index 2" {
-    const p = DomainData.generate(1.0, 201);
+    const p = Domain.init(1.0, 201);
 
     var i: isize = 0;
     var x_prev = i - 1;
