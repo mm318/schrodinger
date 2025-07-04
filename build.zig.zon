@@ -1,0 +1,20 @@
+.{
+    .name = .schrodinger,
+    .version = "0.0.0",
+    .fingerprint = 0x7500392784adb00f, // Changing this has security and trust implications.
+
+    .minimum_zig_version = "0.14.0",
+
+    .dependencies = .{
+        .arkode = .{
+            .url = "https://github.com/mm318/arkode-zig/archive/26a51b3243c6f9eaa45d51db2f3ac778f8ca8007.zip",
+            .hash = "arkode-6.2.1-5YSPKHhZlgB-Q06OhXQLj_pN0D123_Xtjv0JDEb3xR1W",
+        },
+    },
+
+    .paths = .{
+        "src",
+        "build.zig",
+        "build.zig.zon",
+    },
+}
