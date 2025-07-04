@@ -11,18 +11,20 @@ pub fn build(b: *std.Build) void {
 
     // We will create a module for our other entry point, 'main.zig'.
     const exe_mod = b.createModule(.{
+        .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
+        .link_libcpp = true,
     });
+    exe_mod.addCSourceFile(.{ .file = b.path("src/ark_heat2D.cpp") });
+    exe_mod.addIncludePath(b.path("src"));
     exe_mod.linkLibrary(arkode_dep.artifact("arkode"));
 
     // This creates another `std.Build.Step.Compile` that builds an executable
     const exe = b.addExecutable(.{
-        .name = "heat2d_example",
+        .name = "heat2d",
         .root_module = exe_mod,
     });
-    exe.addCSourceFile(.{ .file = b.path("src/main.cpp") });
-    exe.linkLibCpp();
 
     // This declares intent for the executable to be installed into the
     // standard location when the user invokes the "install" step (the default

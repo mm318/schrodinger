@@ -44,6 +44,8 @@
  * and ARKODE settings. Use the flag --help for more information.
  * ---------------------------------------------------------------------------*/
 
+#include "ark_heat2D.h"
+
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -138,68 +140,17 @@ struct UserData
   double psolvetime;
 };
 
-// -----------------------------------------------------------------------------
-// Functions provided to the SUNDIALS integrator
-// -----------------------------------------------------------------------------
-
-// ODE right hand side function
-static int f(sunrealtype t, N_Vector u, N_Vector f, void* user_data);
-
-// Preconditioner setup and solve functions
-static int PSetup(sunrealtype t, N_Vector u, N_Vector f, sunbooleantype jok,
-                  sunbooleantype* jcurPtr, sunrealtype gamma, void* user_data);
-
-static int PSolve(sunrealtype t, N_Vector u, N_Vector f, N_Vector r, N_Vector z,
-                  sunrealtype gamma, sunrealtype delta, int lr, void* user_data);
-
-// -----------------------------------------------------------------------------
-// UserData and input functions
-// -----------------------------------------------------------------------------
-
-// Set the default values in the UserData structure
-static int InitUserData(UserData* udata);
-
-// Free memory allocated within UserData
-static int FreeUserData(UserData* udata);
-
 // Read the command line inputs and set UserData values
-static int ReadInputs(int* argc, char*** argv, UserData* udata);
-
-// -----------------------------------------------------------------------------
-// Output and utility functions
-// -----------------------------------------------------------------------------
-
-// Compute the true solution
-static int Solution(sunrealtype t, N_Vector u, UserData* udata);
-
-// Compute the solution error solution
-static int SolutionError(sunrealtype t, N_Vector u, N_Vector e, UserData* udata);
-
-// Print the command line options
-static void InputHelp();
-
-// Print some UserData information
-static int PrintUserData(UserData* udata);
-
-// Output solution and error
-static int OpenOutput(UserData* udata);
-static int WriteOutput(sunrealtype t, N_Vector u, UserData* udata);
-static int CloseOutput(UserData* udata);
-
-// Print integration statistics
-static int OutputStats(void* arkode_mem, UserData* udata);
-
-// Print integration timing
-static int OutputTiming(UserData* udata);
+int ReadInputs(int* argc, char*** argv, UserData* udata);
 
 // Check function return values
-static int check_flag(void* flagvalue, const string funcname, int opt);
+int check_flag(void* flagvalue, const string funcname, int opt);
 
 // -----------------------------------------------------------------------------
 // Main Program
 // -----------------------------------------------------------------------------
 
-int main(int argc, char* argv[])
+ArkHeat2DContext ark_heat2D_init(int argc, char* argv[])
 {
   int flag;                    // reusable error-checking flag
   UserData* udata      = NULL; // user data structure
@@ -208,14 +159,10 @@ int main(int argc, char* argv[])
   void* arkode_mem     = NULL; // ARKODE memory structure
   SUNAdaptController C = NULL; // Adaptivity controller
 
-  // Timing variables
-  chrono::time_point<chrono::steady_clock> t1;
-  chrono::time_point<chrono::steady_clock> t2;
-
   // Create the SUNDIALS context object for this simulation
   SUNContext ctx;
   flag = SUNContext_Create(SUN_COMM_NULL, &ctx);
-  if (check_flag(&flag, "SUNContext_Create", 1)) { return 1; }
+  if (check_flag(&flag, "SUNContext_Create", 1)) { return {nullptr, nullptr}; }
 
   // ---------------
   // Setup UserData
@@ -225,28 +172,28 @@ int main(int argc, char* argv[])
   // defaults may be overwritten by command line inputs in ReadInputs below.
   udata = new UserData;
   flag  = InitUserData(udata);
-  if (check_flag(&flag, "InitUserData", 1)) { return 1; }
+  if (check_flag(&flag, "InitUserData", 1)) { return {nullptr, nullptr}; }
 
   // Parse command line inputs
   flag = ReadInputs(&argc, &argv, udata);
-  if (flag != 0) { return 1; }
+  if (flag != 0) { return {nullptr, nullptr}; }
 
   // Output problem setup/options
   flag = PrintUserData(udata);
-  if (check_flag(&flag, "PrintUserData", 1)) { return 1; }
+  if (check_flag(&flag, "PrintUserData", 1)) { return {nullptr, nullptr}; }
 
   if (udata->diagnostics || udata->lsinfo)
   {
     SUNLogger logger = NULL;
 
     flag = SUNContext_GetLogger(ctx, &logger);
-    if (check_flag(&flag, "SUNContext_GetLogger", 1)) { return 1; }
+    if (check_flag(&flag, "SUNContext_GetLogger", 1)) { return {nullptr, nullptr}; }
 
     flag = SUNLogger_SetInfoFilename(logger, "diagnostics.txt");
-    if (check_flag(&flag, "SUNLogger_SetInfoFilename", 1)) { return 1; }
+    if (check_flag(&flag, "SUNLogger_SetInfoFilename", 1)) { return {nullptr, nullptr}; }
 
     flag = SUNLogger_SetDebugFilename(logger, "diagnostics.txt");
-    if (check_flag(&flag, "SUNLogger_SetInfoFilename", 1)) { return 1; }
+    if (check_flag(&flag, "SUNLogger_SetInfoFilename", 1)) { return {nullptr, nullptr}; }
   }
 
   // ----------------------
@@ -255,15 +202,15 @@ int main(int argc, char* argv[])
 
   // Create vector for solution
   u = N_VNew_Serial(udata->nodes, ctx);
-  if (check_flag((void*)u, "N_VNew_Serial", 0)) { return 1; }
+  if (check_flag((void*)u, "N_VNew_Serial", 0)) { return {nullptr, nullptr}; }
 
   // Set initial condition
   flag = Solution(ZERO, u, udata);
-  if (check_flag(&flag, "Solution", 1)) { return 1; }
+  if (check_flag(&flag, "Solution", 1)) { return {nullptr, nullptr}; }
 
   // Create vector for error
   udata->e = N_VClone(u);
-  if (check_flag((void*)(udata->e), "N_VClone", 0)) { return 1; }
+  if (check_flag((void*)(udata->e), "N_VClone", 0)) { return {nullptr, nullptr}; }
 
   // ---------------------
   // Create linear solver
@@ -275,19 +222,19 @@ int main(int argc, char* argv[])
   if (udata->pcg)
   {
     LS = SUNLinSol_PCG(u, prectype, udata->liniters, ctx);
-    if (check_flag((void*)LS, "SUNLinSol_PCG", 0)) { return 1; }
+    if (check_flag((void*)LS, "SUNLinSol_PCG", 0)) { return {nullptr, nullptr}; }
   }
   else
   {
     LS = SUNLinSol_SPGMR(u, prectype, udata->liniters, ctx);
-    if (check_flag((void*)LS, "SUNLinSol_SPGMR", 0)) { return 1; }
+    if (check_flag((void*)LS, "SUNLinSol_SPGMR", 0)) { return {nullptr, nullptr}; }
   }
 
   // Allocate preconditioner workspace
   if (udata->prec)
   {
     udata->d = N_VClone(u);
-    if (check_flag((void*)(udata->d), "N_VClone", 0)) { return 1; }
+    if (check_flag((void*)(udata->d), "N_VClone", 0)) { return {nullptr, nullptr}; }
   }
 
   // --------------
@@ -296,41 +243,41 @@ int main(int argc, char* argv[])
 
   // Create integrator
   arkode_mem = ARKStepCreate(NULL, f, ZERO, u, ctx);
-  if (check_flag((void*)arkode_mem, "ARKStepCreate", 0)) { return 1; }
+  if (check_flag((void*)arkode_mem, "ARKStepCreate", 0)) { return {nullptr, nullptr}; }
 
   // Specify tolerances
   flag = ARKodeSStolerances(arkode_mem, udata->rtol, udata->atol);
-  if (check_flag(&flag, "ARKodeSStolerances", 1)) { return 1; }
+  if (check_flag(&flag, "ARKodeSStolerances", 1)) { return {nullptr, nullptr}; }
 
   // Attach user data
   flag = ARKodeSetUserData(arkode_mem, (void*)udata);
-  if (check_flag(&flag, "ARKodeSetUserData", 1)) { return 1; }
+  if (check_flag(&flag, "ARKodeSetUserData", 1)) { return {nullptr, nullptr}; }
 
   // Attach linear solver
   flag = ARKodeSetLinearSolver(arkode_mem, LS, NULL);
-  if (check_flag(&flag, "ARKodeSetLinearSolver", 1)) { return 1; }
+  if (check_flag(&flag, "ARKodeSetLinearSolver", 1)) { return {nullptr, nullptr}; }
 
   if (udata->prec)
   {
     // Attach preconditioner
     flag = ARKodeSetPreconditioner(arkode_mem, PSetup, PSolve);
-    if (check_flag(&flag, "ARKodeSetPreconditioner", 1)) { return 1; }
+    if (check_flag(&flag, "ARKodeSetPreconditioner", 1)) { return {nullptr, nullptr}; }
 
     // Set linear solver setup frequency (update preconditioner)
     flag = ARKodeSetLSetupFrequency(arkode_mem, udata->msbp);
-    if (check_flag(&flag, "ARKodeSetLSetupFrequency", 1)) { return 1; }
+    if (check_flag(&flag, "ARKodeSetLSetupFrequency", 1)) { return {nullptr, nullptr}; }
   }
 
   // Set linear solver tolerance factor
   flag = ARKodeSetEpsLin(arkode_mem, udata->epslin);
-  if (check_flag(&flag, "ARKodeSetEpsLin", 1)) { return 1; }
+  if (check_flag(&flag, "ARKodeSetEpsLin", 1)) { return {nullptr, nullptr}; }
 
   // Select method order
   if (udata->order > 1)
   {
     // Use an ARKode provided table
     flag = ARKodeSetOrder(arkode_mem, udata->order);
-    if (check_flag(&flag, "ARKodeSetOrder", 1)) { return 1; }
+    if (check_flag(&flag, "ARKodeSetOrder", 1)) { return {nullptr, nullptr}; }
   }
   else
   {
@@ -341,11 +288,11 @@ int main(int argc, char* argv[])
     // Create implicit Euler Butcher table
     c[0] = A[0] = b[0] = ONE;
     B                  = ARKodeButcherTable_Create(1, 1, 0, c, A, b, NULL);
-    if (check_flag((void*)B, "ARKodeButcherTable_Create", 0)) { return 1; }
+    if (check_flag((void*)B, "ARKodeButcherTable_Create", 0)) { return {nullptr, nullptr}; }
 
     // Attach the Butcher table
     flag = ARKStepSetTables(arkode_mem, 1, 0, B, NULL);
-    if (check_flag(&flag, "ARKStepSetTables", 1)) { return 1; }
+    if (check_flag(&flag, "ARKStepSetTables", 1)) { return {nullptr, nullptr}; }
 
     // Free the Butcher table
     ARKodeButcherTable_Free(B);
@@ -355,7 +302,7 @@ int main(int argc, char* argv[])
   if (udata->hfixed > ZERO)
   {
     flag = ARKodeSetFixedStep(arkode_mem, udata->hfixed);
-    if (check_flag(&flag, "ARKodeSetFixedStep", 1)) { return 1; }
+    if (check_flag(&flag, "ARKodeSetFixedStep", 1)) { return {nullptr, nullptr}; }
   }
   else
   {
@@ -373,66 +320,32 @@ int main(int argc, char* argv[])
     // case (9): C = SUNAdaptController_H312(ctx); break;
     }
     flag = ARKodeSetAdaptController(arkode_mem, C);
-    if (check_flag(&flag, "ARKodeSetAdaptController", 1)) { return 1; }
+    if (check_flag(&flag, "ARKodeSetAdaptController", 1)) { return {nullptr, nullptr}; }
   }
 
   // Specify linearly implicit non-time-dependent RHS
   if (udata->linear)
   {
     flag = ARKodeSetLinear(arkode_mem, 0);
-    if (check_flag(&flag, "ARKodeSetLinear", 1)) { return 1; }
+    if (check_flag(&flag, "ARKodeSetLinear", 1)) { return {nullptr, nullptr}; }
   }
 
   // Set max steps between outputs
   flag = ARKodeSetMaxNumSteps(arkode_mem, udata->maxsteps);
-  if (check_flag(&flag, "ARKodeSetMaxNumSteps", 1)) { return 1; }
+  if (check_flag(&flag, "ARKodeSetMaxNumSteps", 1)) { return {nullptr, nullptr}; }
 
   // Set stopping time
   flag = ARKodeSetStopTime(arkode_mem, udata->tf);
-  if (check_flag(&flag, "ARKodeSetStopTime", 1)) { return 1; }
+  if (check_flag(&flag, "ARKodeSetStopTime", 1)) { return {nullptr, nullptr}; }
 
-  // -----------------------
-  // Loop over output times
-  // -----------------------
+  return {udata, arkode_mem};
+}
 
-  sunrealtype t     = ZERO;
-  sunrealtype dTout = udata->tf / udata->nout;
-  sunrealtype tout  = dTout;
-
-  // Initial output
-  flag = OpenOutput(udata);
-  if (check_flag(&flag, "OpenOutput", 1)) { return 1; }
-
-  flag = WriteOutput(t, u, udata);
-  if (check_flag(&flag, "WriteOutput", 1)) { return 1; }
-
-  for (int iout = 0; iout < udata->nout; iout++)
-  {
-    // Start timer
-    t1 = chrono::steady_clock::now();
-
-    // Evolve in time
-    flag = ARKodeEvolve(arkode_mem, tout, u, &t, ARK_NORMAL);
-    if (check_flag(&flag, "ARKodeEvolve", 1)) { break; }
-
-    // Stop timer
-    t2 = chrono::steady_clock::now();
-
-    // Update timer
-    udata->evolvetime += chrono::duration<double>(t2 - t1).count();
-
-    // Output solution and error
-    flag = WriteOutput(t, u, udata);
-    if (check_flag(&flag, "WriteOutput", 1)) { return 1; }
-
-    // Update output time
-    tout += dTout;
-    tout = (tout > udata->tf) ? udata->tf : tout;
-  }
-
-  // Close output
-  flag = CloseOutput(udata);
-  if (check_flag(&flag, "CloseOutput", 1)) { return 1; }
+int ark_heat2D_finish(ArkHeat2DContext ctx)
+{
+  int flag;                           // reusable error-checking flag
+  UserData* udata  = ctx.udata;       // user data structure
+  void* arkode_mem = ctx.arkode_mem;  // ARKODE memory structure
 
   // --------------
   // Final outputs
@@ -486,7 +399,7 @@ int main(int argc, char* argv[])
 // -----------------------------------------------------------------------------
 
 // f routine to compute the ODE RHS function f(t,y).
-static int f(sunrealtype t, N_Vector u, N_Vector f, void* user_data)
+int f(sunrealtype t, N_Vector u, N_Vector f, void* user_data)
 {
   // Timing variables
   chrono::time_point<chrono::steady_clock> t1;
@@ -574,8 +487,8 @@ static int f(sunrealtype t, N_Vector u, N_Vector f, void* user_data)
 }
 
 // Preconditioner setup routine
-static int PSetup(sunrealtype t, N_Vector u, N_Vector f, sunbooleantype jok,
-                  sunbooleantype* jcurPtr, sunrealtype gamma, void* user_data)
+int PSetup(sunrealtype t, N_Vector u, N_Vector f, sunbooleantype jok,
+           sunbooleantype* jcurPtr, sunrealtype gamma, void* user_data)
 {
   // Timing variables
   chrono::time_point<chrono::steady_clock> t1;
@@ -612,8 +525,8 @@ static int PSetup(sunrealtype t, N_Vector u, N_Vector f, sunbooleantype jok,
 }
 
 // Preconditioner solve routine for Pz = r
-static int PSolve(sunrealtype t, N_Vector u, N_Vector f, N_Vector r, N_Vector z,
-                  sunrealtype gamma, sunrealtype delta, int lr, void* user_data)
+int PSolve(sunrealtype t, N_Vector u, N_Vector f, N_Vector r, N_Vector z,
+           sunrealtype gamma, sunrealtype delta, int lr, void* user_data)
 {
   // Timing variables
   chrono::time_point<chrono::steady_clock> t1;
@@ -643,7 +556,7 @@ static int PSolve(sunrealtype t, N_Vector u, N_Vector f, N_Vector r, N_Vector z,
 // -----------------------------------------------------------------------------
 
 // Initialize memory allocated within Userdata
-static int InitUserData(UserData* udata)
+int InitUserData(UserData* udata)
 {
   // Diffusion coefficient
   udata->kx = ONE;
@@ -706,7 +619,7 @@ static int InitUserData(UserData* udata)
 }
 
 // Free memory allocated within Userdata
-static int FreeUserData(UserData* udata)
+int FreeUserData(UserData* udata)
 {
   // Free preconditioner data
   if (udata->d)
@@ -727,7 +640,7 @@ static int FreeUserData(UserData* udata)
 }
 
 // Read command line inputs
-static int ReadInputs(int* argc, char*** argv, UserData* udata)
+int ReadInputs(int* argc, char*** argv, UserData* udata)
 {
   // Check for input args
   int arg_idx = 1;
@@ -826,7 +739,7 @@ static int ReadInputs(int* argc, char*** argv, UserData* udata)
 // -----------------------------------------------------------------------------
 
 // Compute the exact solution
-static int Solution(sunrealtype t, N_Vector u, UserData* udata)
+int Solution(sunrealtype t, N_Vector u, UserData* udata)
 {
   sunrealtype x, y;
   sunrealtype cos_sqr_t;
@@ -859,7 +772,7 @@ static int Solution(sunrealtype t, N_Vector u, UserData* udata)
 }
 
 // Compute the solution error
-static int SolutionError(sunrealtype t, N_Vector u, N_Vector e, UserData* udata)
+int SolutionError(sunrealtype t, N_Vector u, N_Vector e, UserData* udata)
 {
   // Compute true solution
   int flag = Solution(t, e, udata);
@@ -873,7 +786,7 @@ static int SolutionError(sunrealtype t, N_Vector u, N_Vector e, UserData* udata)
 }
 
 // Print command line options
-static void InputHelp()
+void InputHelp()
 {
   cout << endl;
   cout << "Command line options:" << endl;
@@ -906,7 +819,7 @@ static void InputHelp()
 }
 
 // Print user data
-static int PrintUserData(UserData* udata)
+int PrintUserData(UserData* udata)
 {
   cout << endl;
   cout << "2D Heat PDE test problem:" << endl;
@@ -944,7 +857,7 @@ static int PrintUserData(UserData* udata)
 }
 
 // Initialize output
-static int OpenOutput(UserData* udata)
+int OpenOutput(UserData* udata)
 {
   // Header for status output
   if (udata->output > 0)
@@ -999,7 +912,7 @@ static int OpenOutput(UserData* udata)
 }
 
 // Write output
-static int WriteOutput(sunrealtype t, N_Vector u, UserData* udata)
+int WriteOutput(sunrealtype t, N_Vector u, UserData* udata)
 {
   int flag;
 
@@ -1055,7 +968,7 @@ static int WriteOutput(sunrealtype t, N_Vector u, UserData* udata)
 }
 
 // Finalize output
-static int CloseOutput(UserData* udata)
+int CloseOutput(UserData* udata)
 {
   // Footer for status output
   if (udata->output > 0)
@@ -1086,7 +999,7 @@ static int CloseOutput(UserData* udata)
 }
 
 // Print integrator statistics
-static int OutputStats(void* arkode_mem, UserData* udata)
+int OutputStats(void* arkode_mem, UserData* udata)
 {
   int flag;
 
@@ -1155,7 +1068,7 @@ static int OutputStats(void* arkode_mem, UserData* udata)
   return 0;
 }
 
-static int OutputTiming(UserData* udata)
+int OutputTiming(UserData* udata)
 {
   cout << scientific;
   cout << setprecision(6);
@@ -1175,7 +1088,7 @@ static int OutputTiming(UserData* udata)
 }
 
 // Check function return value
-static int check_flag(void* flagvalue, const string funcname, int opt)
+int check_flag(void* flagvalue, const string funcname, int opt)
 {
   // Check if the function returned a NULL pointer
   if (opt == 0)
