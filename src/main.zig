@@ -214,6 +214,7 @@ const Domain = struct {
     kx: s.sunrealtype = 0.5, // x direction heat conductivity, diffusion coefficient
     ky: s.sunrealtype = 0.3, // y direction heat conductivity, diffusion coefficient
     kz: s.sunrealtype = 0.1, // z direction heat conductivity, diffusion coefficient
+    h: s.sunrealtype = 1, // heat source power
 
     const Coord = struct {
         ix: usize,
@@ -277,6 +278,7 @@ export fn f(
     const c1z: s.sunrealtype = p.kz / p.dz / p.dz;
     const c2z: s.sunrealtype = -2.0 * c1z;
 
+    // slower
     // for (0..@intCast(p.Nz)) |iz| {
     //     for (0..@intCast(p.Ny)) |iy| {
     //         for (0..@intCast(p.Nx)) |ix| {
@@ -299,6 +301,7 @@ export fn f(
     //     }
     // }
 
+    // slow
     // for (0..p.size()) |i| {
     //     const c = p.index2coord(i);
     //     if (c.ix == 0 or c.ix == p.Nx - 1 or c.iy == 0 or c.iy == p.Ny - 1 or c.iz == 0 or c.iz == p.Nz - 1) {
@@ -351,7 +354,7 @@ export fn f(
         .iy = @intCast(@divTrunc(p.Ny, 2)),
         .iz = @intCast(@divTrunc(p.Nz, 2)),
     }); // heat source location
-    Udot[isrc] += 0.01 / ((p.dx + p.dy + p.dz) / 3); // source term
+    Udot[isrc] += p.h; // source term
 
     return 0; // return with success
 }
@@ -393,6 +396,15 @@ const Solver = struct {
         return self;
     }
 
+    fn getSolution(self: *const Solver) []const f64 {
+        const U = checkedMemOp(s.N_VGetArrayPointer, .{self.y}) catch @panic("should have already crashed!");
+        const U_size = s.N_VGetLocalLength(self.y);
+        var result: []const f64 = undefined;
+        result.ptr = U;
+        result.len = @intCast(U_size);
+        return result;
+    }
+
     fn printStats(self: *const Solver) void {
         var nst: c_long = undefined;
         var nst_a: c_long = undefined;
@@ -405,17 +417,17 @@ const Solver = struct {
         var nni: c_long = undefined;
         var ncfn: c_long = undefined;
         var netf: c_long = undefined;
-        checkedCall(s.ARKodeGetNumSteps, .{ self.arkode_mem, &nst }) catch @panic("wtf");
-        checkedCall(s.ARKodeGetNumStepAttempts, .{ self.arkode_mem, &nst_a }) catch @panic("wtf");
-        checkedCall(s.ARKodeGetNumRhsEvals, .{ self.arkode_mem, 0, &nfe }) catch @panic("wtf");
-        checkedCall(s.ARKodeGetNumRhsEvals, .{ self.arkode_mem, 1, &nfi }) catch @panic("wtf");
-        checkedCall(s.ARKodeGetNumLinSolvSetups, .{ self.arkode_mem, &nsetups }) catch @panic("wtf");
-        checkedCall(s.ARKodeGetNumErrTestFails, .{ self.arkode_mem, &netf }) catch @panic("wtf");
-        checkedCall(s.ARKodeGetNumNonlinSolvIters, .{ self.arkode_mem, &nni }) catch @panic("wtf");
-        checkedCall(s.ARKodeGetNumNonlinSolvConvFails, .{ self.arkode_mem, &ncfn }) catch @panic("wtf");
-        checkedCall(s.ARKodeGetNumLinIters, .{ self.arkode_mem, &nli }) catch @panic("wtf");
-        checkedCall(s.ARKodeGetNumJtimesEvals, .{ self.arkode_mem, &nJv }) catch @panic("wtf");
-        checkedCall(s.ARKodeGetNumLinConvFails, .{ self.arkode_mem, &nlcf }) catch @panic("wtf");
+        checkedCall(s.ARKodeGetNumSteps, .{ self.arkode_mem, &nst }) catch @panic("can't even get an integer?");
+        checkedCall(s.ARKodeGetNumStepAttempts, .{ self.arkode_mem, &nst_a }) catch @panic("can't even get an integer?");
+        checkedCall(s.ARKodeGetNumRhsEvals, .{ self.arkode_mem, 0, &nfe }) catch @panic("can't even get an integer?");
+        checkedCall(s.ARKodeGetNumRhsEvals, .{ self.arkode_mem, 1, &nfi }) catch @panic("can't even get an integer?");
+        checkedCall(s.ARKodeGetNumLinSolvSetups, .{ self.arkode_mem, &nsetups }) catch @panic("can't even get an integer?");
+        checkedCall(s.ARKodeGetNumErrTestFails, .{ self.arkode_mem, &netf }) catch @panic("can't even get an integer?");
+        checkedCall(s.ARKodeGetNumNonlinSolvIters, .{ self.arkode_mem, &nni }) catch @panic("can't even get an integer?");
+        checkedCall(s.ARKodeGetNumNonlinSolvConvFails, .{ self.arkode_mem, &ncfn }) catch @panic("can't even get an integer?");
+        checkedCall(s.ARKodeGetNumLinIters, .{ self.arkode_mem, &nli }) catch @panic("can't even get an integer?");
+        checkedCall(s.ARKodeGetNumJtimesEvals, .{ self.arkode_mem, &nJv }) catch @panic("can't even get an integer?");
+        checkedCall(s.ARKodeGetNumLinConvFails, .{ self.arkode_mem, &nlcf }) catch @panic("can't even get an integer?");
         std.log.info("", .{});
         std.log.info("Final Solver Statistics:", .{});
         std.log.info("   Internal solver steps = {} (attempted = {})", .{ nst, nst_a });
@@ -437,7 +449,67 @@ const Solver = struct {
     }
 };
 
+const Plotter = struct {
+    mesh_builder: VtuWriter.UnstructuredMeshBuilder,
+
+    fn init(allocator: std.mem.Allocator, domain: *const Domain) !Plotter {
+        var self = Plotter{ .mesh_builder = VtuWriter.UnstructuredMeshBuilder.init(allocator) };
+
+        try self.mesh_builder.reservePoints(domain.size());
+        try self.mesh_builder.reserveCells(.VTK_HEXAHEDRON, (domain.Nx - 1) * (domain.Ny - 1) * (domain.Nz - 1));
+
+        for (0..domain.size()) |i| {
+            const coord = domain.index2coord(i);
+            _ = try self.mesh_builder.addPoint(.{
+                domain.dx * @as(f64, @floatFromInt(coord.ix)),
+                domain.dy * @as(f64, @floatFromInt(coord.iy)),
+                domain.dz * @as(f64, @floatFromInt(coord.iz)),
+            });
+        }
+
+        for (0..domain.Nz - 1) |iz| {
+            for (0..domain.Ny - 1) |iy| {
+                for (0..domain.Nx - 1) |ix| {
+                    try self.mesh_builder.addCell(.VTK_HEXAHEDRON, .{
+                        @intCast(domain.coord2index(.{ .ix = ix, .iy = iy, .iz = iz })),
+                        @intCast(domain.coord2index(.{ .ix = ix + 1, .iy = iy, .iz = iz })),
+                        @intCast(domain.coord2index(.{ .ix = ix + 1, .iy = iy + 1, .iz = iz })),
+                        @intCast(domain.coord2index(.{ .ix = ix, .iy = iy + 1, .iz = iz })),
+                        @intCast(domain.coord2index(.{ .ix = ix, .iy = iy, .iz = iz + 1 })),
+                        @intCast(domain.coord2index(.{ .ix = ix + 1, .iy = iy, .iz = iz + 1 })),
+                        @intCast(domain.coord2index(.{ .ix = ix + 1, .iy = iy + 1, .iz = iz + 1 })),
+                        @intCast(domain.coord2index(.{ .ix = ix, .iy = iy + 1, .iz = iz + 1 })),
+                    });
+                }
+            }
+        }
+
+        return self;
+    }
+
+    fn plot(self: *const Plotter, allocator: std.mem.Allocator, point_data: []const f64, filename: []const u8) !void {
+        const mesh = self.mesh_builder.getUnstructuredMesh();
+
+        const data_sets = [_]VtuWriter.DataSet{
+            .{ "Temperature", VtuWriter.DataSetType.PointData, 1, point_data },
+        };
+
+        try VtuWriter.writeVtu(allocator, filename, mesh, &data_sets, .rawbinarycompressed);
+    }
+
+    fn deinit(self: *Plotter) void {
+        self.mesh_builder.deinit();
+    }
+};
+
 pub fn main() !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    const allocator = gpa.allocator();
+    defer {
+        const deinit_status = gpa.deinit();
+        if (deinit_status == .leak) std.log.warn("memory leaked!", .{});
+    }
+
     var domain = Domain.init(1.0, 101);
 
     const T0: s.sunrealtype = 0.0; // initial time
@@ -459,6 +531,9 @@ pub fn main() !void {
     var solver = try Solver.init(&domain, T0);
     defer solver.deinit();
 
+    var plotter = try Plotter.init(allocator, &domain);
+    defer plotter.deinit();
+
     var t = T0;
     const dTout = (Tf - T0) / Nt;
     var tout = T0 + dTout;
@@ -469,6 +544,7 @@ pub fn main() !void {
     std.log.info("  {d:10.6}  {e:10.4}", .{ t, @sqrt(s.N_VDotProd(solver.y, solver.y) / @as(f64, @floatFromInt(domain.size()))) });
 
     var timer = try std.time.Timer.start();
+    var strbuf: [256]u8 = undefined;
     for (0..Nt) |_| {
         checkedCall(s.ARKodeEvolve, .{ solver.arkode_mem, tout, solver.y, &t, s.ARK_NORMAL }) catch {
             std.log.err("Solver failure, stopping integration", .{});
@@ -479,6 +555,16 @@ pub fn main() !void {
         std.log.info("  {d:10.6}  {e:10.4}", .{ t, @sqrt(s.N_VDotProd(solver.y, solver.y) / @as(f64, @floatFromInt(domain.size()))) });
         tout += dTout;
         tout = if (tout > Tf) Tf else tout;
+
+        // plot results of time t
+        const filename = std.fmt.bufPrint(&strbuf, "heat3d_t{d:0>10.6}.vtu", .{t}) catch {
+            std.log.err("Faled to produce filename for plot", .{});
+            continue;
+        };
+        plotter.plot(allocator, solver.getSolution(), filename) catch {
+            std.log.err("Failed to plot", .{});
+            continue;
+        };
     }
     const elapsed: f64 = @floatFromInt(timer.read());
     std.log.info("", .{});
@@ -564,6 +650,7 @@ test "incremental index 2" {
     for (0..@intCast(p.Nz)) |iz| {
         for (0..@intCast(p.Ny)) |iy| {
             for (0..@intCast(p.Nx)) |ix| {
+                try std.testing.expectEqual(p.coord2index(.{ .ix = ix, .iy = iy, .iz = iz }), @as(usize, @intCast(i)));
                 if (ix > 0) {
                     try std.testing.expectEqual(p.coord2index(.{ .ix = ix - 1, .iy = iy, .iz = iz }), @as(usize, @intCast(x_prev)));
                 }
