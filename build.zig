@@ -24,7 +24,7 @@ pub fn build(b: *std.Build) void {
 
     // This creates another `std.Build.Step.Compile` that builds an executable
     const exe = b.addExecutable(.{
-        .name = "schrodinger",
+        .name = "heat1d",
         .root_module = exe_mod,
     });
 
