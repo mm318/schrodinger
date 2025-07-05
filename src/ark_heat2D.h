@@ -1,4 +1,7 @@
 #include "nvector/nvector_serial.h"    // access to the serial N_Vector
+#include "sunlinsol/sunlinsol_pcg.h"   // access to PCG SUNLinearSolver
+#include "sunlinsol/sunlinsol_spgmr.h" // access to SPGMR SUNLinearSolver
+#include "arkode/arkode_arkstep.h"     // access to ARKStep
 
 #ifdef __cplusplus
 extern "C" {
@@ -8,12 +11,16 @@ struct UserData;
 typedef struct UserData UserData;
 
 typedef struct ArkHeat2DContext {
-  UserData* udata;
-  void* arkode_mem;
+  UserData* udata;      // user data structure
+  N_Vector u;           // vector for storing solution
+  SUNLinearSolver LS;   // linear solver memory structure
+  void* arkode_mem;     // ARKODE memory structure
+  SUNAdaptController C; // Adaptivity controller
+  SUNContext ctx;       // The SUNDIALS context object for this simulation
 } ArkHeat2DContext;
 
 ArkHeat2DContext ark_heat2D_init(int argc, char* argv[]);
-int ark_heat2D_finish(ArkHeat2DContext ctx);
+int ark_heat2D_finish(ArkHeat2DContext * ctx, const sunrealtype t);
 
 // -----------------------------------------------------------------------------
 // Functions provided to the SUNDIALS integrator

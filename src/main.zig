@@ -8,7 +8,7 @@ const c = @cImport({
 });
 
 pub fn main() !void {
-    const ctx = c.ark_heat2D_init(0, null);
+    var ctx = c.ark_heat2D_init(0, null);
     if (ctx.udata == null or ctx.arkode_mem == null) {
         return error.GeneralFailure;
     }
@@ -56,7 +56,7 @@ pub fn main() !void {
     // flag = CloseOutput(udata);
     // if (check_flag(&flag, "CloseOutput", 1)) { return 1; }
 
-    const ret = c.ark_heat2D_finish();
+    const ret = c.ark_heat2D_finish(&ctx, 0);
     if (ret != 0) {
         return error.GeneralFailure;
     }

@@ -44,10 +44,10 @@
  * and ARKODE settings. Use the flag --help for more information.
  * ---------------------------------------------------------------------------*/
 
-#include "ark_heat2D.h"
 
 #include <chrono>
 #include <cmath>
+#include <cstddef>
 #include <cstdio>
 #include <fstream>
 #include <iomanip>
@@ -55,10 +55,7 @@
 #include <limits>
 #include <string>
 
-#include "arkode/arkode_arkstep.h"     // access to ARKStep
-#include "nvector/nvector_serial.h"    // access to the serial N_Vector
-#include "sunlinsol/sunlinsol_pcg.h"   // access to PCG SUNLinearSolver
-#include "sunlinsol/sunlinsol_spgmr.h" // access to SPGMR SUNLinearSolver
+#include "ark_heat2D.h"
 
 // Macros for problem constants
 #define PI   SUN_RCONST(3.141592653589793238462643383279502884197169)
@@ -74,6 +71,8 @@ using namespace std;
 // -----------------------------------------------------------------------------
 // User data structure
 // -----------------------------------------------------------------------------
+
+static ArkHeat2DContext kInvalidContext;
 
 struct UserData
 {
@@ -153,16 +152,16 @@ int check_flag(void* flagvalue, const string funcname, int opt);
 ArkHeat2DContext ark_heat2D_init(int argc, char* argv[])
 {
   int flag;                    // reusable error-checking flag
-  UserData* udata      = NULL; // user data structure
-  N_Vector u           = NULL; // vector for storing solution
-  SUNLinearSolver LS   = NULL; // linear solver memory structure
-  void* arkode_mem     = NULL; // ARKODE memory structure
-  SUNAdaptController C = NULL; // Adaptivity controller
 
-  // Create the SUNDIALS context object for this simulation
-  SUNContext ctx;
-  flag = SUNContext_Create(SUN_COMM_NULL, &ctx);
-  if (check_flag(&flag, "SUNContext_Create", 1)) { return {nullptr, nullptr}; }
+  ArkHeat2DContext ctx;
+  ctx.udata = nullptr;
+  ctx.u = nullptr;
+  ctx.LS = nullptr;
+  ctx.arkode_mem = nullptr;
+  ctx.C = nullptr;
+
+  flag = SUNContext_Create(SUN_COMM_NULL, &ctx.ctx);
+  if (check_flag(&flag, "SUNContext_Create", 1)) { return kInvalidContext; }
 
   // ---------------
   // Setup UserData
@@ -170,30 +169,30 @@ ArkHeat2DContext ark_heat2D_init(int argc, char* argv[])
 
   // Allocate and initialize user data structure with default values. The
   // defaults may be overwritten by command line inputs in ReadInputs below.
-  udata = new UserData;
-  flag  = InitUserData(udata);
-  if (check_flag(&flag, "InitUserData", 1)) { return {nullptr, nullptr}; }
+  ctx.udata = new UserData;
+  flag  = InitUserData(ctx.udata);
+  if (check_flag(&flag, "InitUserData", 1)) { return kInvalidContext; }
 
   // Parse command line inputs
-  flag = ReadInputs(&argc, &argv, udata);
-  if (flag != 0) { return {nullptr, nullptr}; }
+  flag = ReadInputs(&argc, &argv, ctx.udata);
+  if (flag != 0) { return kInvalidContext; }
 
   // Output problem setup/options
-  flag = PrintUserData(udata);
-  if (check_flag(&flag, "PrintUserData", 1)) { return {nullptr, nullptr}; }
+  flag = PrintUserData(ctx.udata);
+  if (check_flag(&flag, "PrintUserData", 1)) { return kInvalidContext; }
 
-  if (udata->diagnostics || udata->lsinfo)
+  if (ctx.udata->diagnostics || ctx.udata->lsinfo)
   {
     SUNLogger logger = NULL;
 
-    flag = SUNContext_GetLogger(ctx, &logger);
-    if (check_flag(&flag, "SUNContext_GetLogger", 1)) { return {nullptr, nullptr}; }
+    flag = SUNContext_GetLogger(ctx.ctx, &logger);
+    if (check_flag(&flag, "SUNContext_GetLogger", 1)) { return kInvalidContext; }
 
     flag = SUNLogger_SetInfoFilename(logger, "diagnostics.txt");
-    if (check_flag(&flag, "SUNLogger_SetInfoFilename", 1)) { return {nullptr, nullptr}; }
+    if (check_flag(&flag, "SUNLogger_SetInfoFilename", 1)) { return kInvalidContext; }
 
     flag = SUNLogger_SetDebugFilename(logger, "diagnostics.txt");
-    if (check_flag(&flag, "SUNLogger_SetInfoFilename", 1)) { return {nullptr, nullptr}; }
+    if (check_flag(&flag, "SUNLogger_SetInfoFilename", 1)) { return kInvalidContext; }
   }
 
   // ----------------------
@@ -201,40 +200,40 @@ ArkHeat2DContext ark_heat2D_init(int argc, char* argv[])
   // ----------------------
 
   // Create vector for solution
-  u = N_VNew_Serial(udata->nodes, ctx);
-  if (check_flag((void*)u, "N_VNew_Serial", 0)) { return {nullptr, nullptr}; }
+  ctx.u = N_VNew_Serial(ctx.udata->nodes, ctx.ctx);
+  if (check_flag((void*)ctx.u, "N_VNew_Serial", 0)) { return kInvalidContext; }
 
   // Set initial condition
-  flag = Solution(ZERO, u, udata);
-  if (check_flag(&flag, "Solution", 1)) { return {nullptr, nullptr}; }
+  flag = Solution(ZERO, ctx.u, ctx.udata);
+  if (check_flag(&flag, "Solution", 1)) { return kInvalidContext; }
 
   // Create vector for error
-  udata->e = N_VClone(u);
-  if (check_flag((void*)(udata->e), "N_VClone", 0)) { return {nullptr, nullptr}; }
+  ctx.udata->e = N_VClone(ctx.u);
+  if (check_flag((void*)(ctx.udata->e), "N_VClone", 0)) { return kInvalidContext; }
 
   // ---------------------
   // Create linear solver
   // ---------------------
 
   // Create linear solver
-  int prectype = (udata->prec) ? SUN_PREC_RIGHT : SUN_PREC_NONE;
+  int prectype = (ctx.udata->prec) ? SUN_PREC_RIGHT : SUN_PREC_NONE;
 
-  if (udata->pcg)
+  if (ctx.udata->pcg)
   {
-    LS = SUNLinSol_PCG(u, prectype, udata->liniters, ctx);
-    if (check_flag((void*)LS, "SUNLinSol_PCG", 0)) { return {nullptr, nullptr}; }
+    ctx.LS = SUNLinSol_PCG(ctx.u, prectype, ctx.udata->liniters, ctx.ctx);
+    if (check_flag((void*)ctx.LS, "SUNLinSol_PCG", 0)) { return kInvalidContext; }
   }
   else
   {
-    LS = SUNLinSol_SPGMR(u, prectype, udata->liniters, ctx);
-    if (check_flag((void*)LS, "SUNLinSol_SPGMR", 0)) { return {nullptr, nullptr}; }
+    ctx.LS = SUNLinSol_SPGMR(ctx.u, prectype, ctx.udata->liniters, ctx.ctx);
+    if (check_flag((void*)ctx.LS, "SUNLinSol_SPGMR", 0)) { return kInvalidContext; }
   }
 
   // Allocate preconditioner workspace
-  if (udata->prec)
+  if (ctx.udata->prec)
   {
-    udata->d = N_VClone(u);
-    if (check_flag((void*)(udata->d), "N_VClone", 0)) { return {nullptr, nullptr}; }
+    ctx.udata->d = N_VClone(ctx.u);
+    if (check_flag((void*)(ctx.udata->d), "N_VClone", 0)) { return kInvalidContext; }
   }
 
   // --------------
@@ -242,42 +241,42 @@ ArkHeat2DContext ark_heat2D_init(int argc, char* argv[])
   // --------------
 
   // Create integrator
-  arkode_mem = ARKStepCreate(NULL, f, ZERO, u, ctx);
-  if (check_flag((void*)arkode_mem, "ARKStepCreate", 0)) { return {nullptr, nullptr}; }
+  ctx.arkode_mem = ARKStepCreate(NULL, f, ZERO, ctx.u, ctx.ctx);
+  if (check_flag((void*)ctx.arkode_mem, "ARKStepCreate", 0)) { return kInvalidContext; }
 
   // Specify tolerances
-  flag = ARKodeSStolerances(arkode_mem, udata->rtol, udata->atol);
-  if (check_flag(&flag, "ARKodeSStolerances", 1)) { return {nullptr, nullptr}; }
+  flag = ARKodeSStolerances(ctx.arkode_mem, ctx.udata->rtol, ctx.udata->atol);
+  if (check_flag(&flag, "ARKodeSStolerances", 1)) { return kInvalidContext; }
 
   // Attach user data
-  flag = ARKodeSetUserData(arkode_mem, (void*)udata);
-  if (check_flag(&flag, "ARKodeSetUserData", 1)) { return {nullptr, nullptr}; }
+  flag = ARKodeSetUserData(ctx.arkode_mem, (void*)ctx.udata);
+  if (check_flag(&flag, "ARKodeSetUserData", 1)) { return kInvalidContext; }
 
   // Attach linear solver
-  flag = ARKodeSetLinearSolver(arkode_mem, LS, NULL);
-  if (check_flag(&flag, "ARKodeSetLinearSolver", 1)) { return {nullptr, nullptr}; }
+  flag = ARKodeSetLinearSolver(ctx.arkode_mem, ctx.LS, NULL);
+  if (check_flag(&flag, "ARKodeSetLinearSolver", 1)) { return kInvalidContext; }
 
-  if (udata->prec)
+  if (ctx.udata->prec)
   {
     // Attach preconditioner
-    flag = ARKodeSetPreconditioner(arkode_mem, PSetup, PSolve);
-    if (check_flag(&flag, "ARKodeSetPreconditioner", 1)) { return {nullptr, nullptr}; }
+    flag = ARKodeSetPreconditioner(ctx.arkode_mem, PSetup, PSolve);
+    if (check_flag(&flag, "ARKodeSetPreconditioner", 1)) { return kInvalidContext; }
 
     // Set linear solver setup frequency (update preconditioner)
-    flag = ARKodeSetLSetupFrequency(arkode_mem, udata->msbp);
-    if (check_flag(&flag, "ARKodeSetLSetupFrequency", 1)) { return {nullptr, nullptr}; }
+    flag = ARKodeSetLSetupFrequency(ctx.arkode_mem, ctx.udata->msbp);
+    if (check_flag(&flag, "ARKodeSetLSetupFrequency", 1)) { return kInvalidContext; }
   }
 
   // Set linear solver tolerance factor
-  flag = ARKodeSetEpsLin(arkode_mem, udata->epslin);
-  if (check_flag(&flag, "ARKodeSetEpsLin", 1)) { return {nullptr, nullptr}; }
+  flag = ARKodeSetEpsLin(ctx.arkode_mem, ctx.udata->epslin);
+  if (check_flag(&flag, "ARKodeSetEpsLin", 1)) { return kInvalidContext; }
 
   // Select method order
-  if (udata->order > 1)
+  if (ctx.udata->order > 1)
   {
     // Use an ARKode provided table
-    flag = ARKodeSetOrder(arkode_mem, udata->order);
-    if (check_flag(&flag, "ARKodeSetOrder", 1)) { return {nullptr, nullptr}; }
+    flag = ARKodeSetOrder(ctx.arkode_mem, ctx.udata->order);
+    if (check_flag(&flag, "ARKodeSetOrder", 1)) { return kInvalidContext; }
   }
   else
   {
@@ -287,85 +286,83 @@ ArkHeat2DContext ark_heat2D_init(int argc, char* argv[])
 
     // Create implicit Euler Butcher table
     c[0] = A[0] = b[0] = ONE;
-    B                  = ARKodeButcherTable_Create(1, 1, 0, c, A, b, NULL);
-    if (check_flag((void*)B, "ARKodeButcherTable_Create", 0)) { return {nullptr, nullptr}; }
+    B = ARKodeButcherTable_Create(1, 1, 0, c, A, b, NULL);
+    if (check_flag((void*)B, "ARKodeButcherTable_Create", 0)) { return kInvalidContext; }
 
     // Attach the Butcher table
-    flag = ARKStepSetTables(arkode_mem, 1, 0, B, NULL);
-    if (check_flag(&flag, "ARKStepSetTables", 1)) { return {nullptr, nullptr}; }
+    flag = ARKStepSetTables(ctx.arkode_mem, 1, 0, B, NULL);
+    if (check_flag(&flag, "ARKStepSetTables", 1)) { return kInvalidContext; }
 
     // Free the Butcher table
     ARKodeButcherTable_Free(B);
   }
 
   // Set fixed step size or adaptivity method
-  if (udata->hfixed > ZERO)
+  if (ctx.udata->hfixed > ZERO)
   {
-    flag = ARKodeSetFixedStep(arkode_mem, udata->hfixed);
-    if (check_flag(&flag, "ARKodeSetFixedStep", 1)) { return {nullptr, nullptr}; }
+    flag = ARKodeSetFixedStep(ctx.arkode_mem, ctx.udata->hfixed);
+    if (check_flag(&flag, "ARKodeSetFixedStep", 1)) { return kInvalidContext; }
   }
   else
   {
-    switch (udata->controller)
+    switch (ctx.udata->controller)
     {
-    case (0): C = SUNAdaptController_PID(ctx); break;
-    case (1): C = SUNAdaptController_PI(ctx); break;
-    case (2): C = SUNAdaptController_I(ctx); break;
-    case (3): C = SUNAdaptController_ExpGus(ctx); break;
-    case (4): C = SUNAdaptController_ImpGus(ctx); break;
-    case (5): C = SUNAdaptController_ImExGus(ctx); break;
-    // case (6): C = SUNAdaptController_H0321(ctx); break;
-    // case (7): C = SUNAdaptController_H0211(ctx); break;
-    // case (8): C = SUNAdaptController_H211(ctx); break;
-    // case (9): C = SUNAdaptController_H312(ctx); break;
+    case (0): ctx.C = SUNAdaptController_PID(ctx.ctx); break;
+    case (1): ctx.C = SUNAdaptController_PI(ctx.ctx); break;
+    case (2): ctx.C = SUNAdaptController_I(ctx.ctx); break;
+    case (3): ctx.C = SUNAdaptController_ExpGus(ctx.ctx); break;
+    case (4): ctx.C = SUNAdaptController_ImpGus(ctx.ctx); break;
+    case (5): ctx.C = SUNAdaptController_ImExGus(ctx.ctx); break;
+    // case (6): ctx.C = SUNAdaptController_H0321(ctx.ctx); break;
+    // case (7): ctx.C = SUNAdaptController_H0211(ctx.ctx); break;
+    // case (8): ctx.C = SUNAdaptController_H211(ctx.ctx); break;
+    // case (9): ctx.C = SUNAdaptController_H312(ctx.ctx); break;
     }
-    flag = ARKodeSetAdaptController(arkode_mem, C);
-    if (check_flag(&flag, "ARKodeSetAdaptController", 1)) { return {nullptr, nullptr}; }
+    flag = ARKodeSetAdaptController(ctx.arkode_mem, ctx.C);
+    if (check_flag(&flag, "ARKodeSetAdaptController", 1)) { return kInvalidContext; }
   }
 
   // Specify linearly implicit non-time-dependent RHS
-  if (udata->linear)
+  if (ctx.udata->linear)
   {
-    flag = ARKodeSetLinear(arkode_mem, 0);
-    if (check_flag(&flag, "ARKodeSetLinear", 1)) { return {nullptr, nullptr}; }
+    flag = ARKodeSetLinear(ctx.arkode_mem, 0);
+    if (check_flag(&flag, "ARKodeSetLinear", 1)) { return kInvalidContext; }
   }
 
   // Set max steps between outputs
-  flag = ARKodeSetMaxNumSteps(arkode_mem, udata->maxsteps);
-  if (check_flag(&flag, "ARKodeSetMaxNumSteps", 1)) { return {nullptr, nullptr}; }
+  flag = ARKodeSetMaxNumSteps(ctx.arkode_mem, ctx.udata->maxsteps);
+  if (check_flag(&flag, "ARKodeSetMaxNumSteps", 1)) { return kInvalidContext; }
 
   // Set stopping time
-  flag = ARKodeSetStopTime(arkode_mem, udata->tf);
-  if (check_flag(&flag, "ARKodeSetStopTime", 1)) { return {nullptr, nullptr}; }
+  flag = ARKodeSetStopTime(ctx.arkode_mem, ctx.udata->tf);
+  if (check_flag(&flag, "ARKodeSetStopTime", 1)) { return kInvalidContext; }
 
-  return {udata, arkode_mem};
+  return ctx;
 }
 
-int ark_heat2D_finish(ArkHeat2DContext ctx)
+int ark_heat2D_finish(ArkHeat2DContext * ctx, const sunrealtype t)
 {
   int flag;                           // reusable error-checking flag
-  UserData* udata  = ctx.udata;       // user data structure
-  void* arkode_mem = ctx.arkode_mem;  // ARKODE memory structure
 
   // --------------
   // Final outputs
   // --------------
 
   // Print final integrator stats
-  if (udata->output > 0)
+  if (ctx->udata->output > 0)
   {
     cout << "Final integrator statistics:" << endl;
-    flag = OutputStats(arkode_mem, udata);
+    flag = OutputStats(ctx->arkode_mem, ctx->udata);
     if (check_flag(&flag, "OutputStats", 1)) { return 1; }
   }
 
-  if (udata->forcing)
+  if (ctx->udata->forcing)
   {
     // Output final error
-    flag = SolutionError(t, u, udata->e, udata);
+    flag = SolutionError(t, ctx->u, ctx->udata->e, ctx->udata);
     if (check_flag(&flag, "SolutionError", 1)) { return 1; }
 
-    sunrealtype maxerr = N_VMaxNorm(udata->e);
+    sunrealtype maxerr = N_VMaxNorm(ctx->udata->e);
 
     cout << scientific;
     cout << setprecision(numeric_limits<sunrealtype>::digits10);
@@ -373,9 +370,9 @@ int ark_heat2D_finish(ArkHeat2DContext ctx)
   }
 
   // Print timing
-  if (udata->timing)
+  if (ctx->udata->timing)
   {
-    flag = OutputTiming(udata);
+    flag = OutputTiming(ctx->udata);
     if (check_flag(&flag, "OutputTiming", 1)) { return 1; }
   }
 
@@ -383,13 +380,13 @@ int ark_heat2D_finish(ArkHeat2DContext ctx)
   // Clean up and return
   // --------------------
 
-  ARKodeFree(&arkode_mem); // Free integrator memory
-  SUNLinSolFree(LS);       // Free linear solver
-  N_VDestroy(u);           // Free vectors
-  FreeUserData(udata);     // Free user data
-  delete udata;
-  (void)SUNAdaptController_Destroy(C); // Free time adaptivity controller
-  SUNContext_Free(&ctx);               // Free context
+  ARKodeFree(&ctx->arkode_mem); // Free integrator memory
+  SUNLinSolFree(ctx->LS);       // Free linear solver
+  N_VDestroy(ctx->u);           // Free vectors
+  FreeUserData(ctx->udata);     // Free user data
+  delete ctx->udata;
+  (void)SUNAdaptController_Destroy(ctx->C); // Free time adaptivity controller
+  SUNContext_Free(&ctx->ctx);               // Free context
 
   return 0;
 }
