@@ -74,69 +74,10 @@ using namespace std;
 
 static ArkHeat2DContext kInvalidContext;
 
-struct UserData
+struct OutputFileStreams
 {
-  // Diffusion coefficients in the x and y directions
-  sunrealtype kx;
-  sunrealtype ky;
-
-  // Enable/disable forcing
-  bool forcing;
-
-  // Final time
-  sunrealtype tf;
-
-  // Upper bounds in x and y directions
-  sunrealtype xu;
-  sunrealtype yu;
-
-  // Number of nodes in the x and y directions
-  sunindextype nx;
-  sunindextype ny;
-
-  // Total number of nodes
-  sunindextype nodes;
-
-  // Mesh spacing in the x and y directions
-  sunrealtype dx;
-  sunrealtype dy;
-
-  // Integrator settings
-  sunrealtype rtol;   // relative tolerance
-  sunrealtype atol;   // absolute tolerance
-  sunrealtype hfixed; // fixed step size
-  int order;          // ARKode method order
-  int controller;     // step size adaptivity method: 0=PID, 1=PI,
-                      //    2=I, 3=ExpGus, 4=ImpGus, 5=ImExGus,
-                      //    6=H0321, 7=H0211, 8=H211, 9=H312
-  int maxsteps;       // max number of steps between outputs
-  bool linear;        // enable/disable linearly implicit option
-  bool diagnostics;   // output diagnostics
-
-  // Linear solver and preconditioner settings
-  bool pcg;           // use PCG (true) or GMRES (false)
-  bool prec;          // preconditioner on/off
-  bool lsinfo;        // output residual history
-  int liniters;       // number of linear iterations
-  int msbp;           // max number of steps between preconditioner setups
-  sunrealtype epslin; // linear solver tolerance factor
-
-  // Inverse of Jacobian diagonal for preconditioner
-  N_Vector d;
-
-  // Output variables
-  int output;    // output level
-  int nout;      // number of output times
   ofstream uout; // output file stream
   ofstream eout; // error file stream
-  N_Vector e;    // error vector
-
-  // Timing variables
-  bool timing; // print timings
-  double evolvetime;
-  double rhstime;
-  double psetuptime;
-  double psolvetime;
 };
 
 // Read the command line inputs and set UserData values
@@ -183,7 +124,7 @@ ArkHeat2DContext ark_heat2D_init(int argc, char* argv[])
 
   if (ctx.udata->diagnostics || ctx.udata->lsinfo)
   {
-    SUNLogger logger = NULL;
+    SUNLogger logger = nullptr;
 
     flag = SUNContext_GetLogger(ctx.ctx, &logger);
     if (check_flag(&flag, "SUNContext_GetLogger", 1)) { return kInvalidContext; }
@@ -241,7 +182,7 @@ ArkHeat2DContext ark_heat2D_init(int argc, char* argv[])
   // --------------
 
   // Create integrator
-  ctx.arkode_mem = ARKStepCreate(NULL, f, ZERO, ctx.u, ctx.ctx);
+  ctx.arkode_mem = ARKStepCreate(nullptr, f, ZERO, ctx.u, ctx.ctx);
   if (check_flag((void*)ctx.arkode_mem, "ARKStepCreate", 0)) { return kInvalidContext; }
 
   // Specify tolerances
@@ -253,7 +194,7 @@ ArkHeat2DContext ark_heat2D_init(int argc, char* argv[])
   if (check_flag(&flag, "ARKodeSetUserData", 1)) { return kInvalidContext; }
 
   // Attach linear solver
-  flag = ARKodeSetLinearSolver(ctx.arkode_mem, ctx.LS, NULL);
+  flag = ARKodeSetLinearSolver(ctx.arkode_mem, ctx.LS, nullptr);
   if (check_flag(&flag, "ARKodeSetLinearSolver", 1)) { return kInvalidContext; }
 
   if (ctx.udata->prec)
@@ -282,15 +223,15 @@ ArkHeat2DContext ark_heat2D_init(int argc, char* argv[])
   {
     // Use implicit Euler (requires fixed step size)
     sunrealtype c[1], A[1], b[1];
-    ARKodeButcherTable B = NULL;
+    ARKodeButcherTable B = nullptr;
 
     // Create implicit Euler Butcher table
     c[0] = A[0] = b[0] = ONE;
-    B = ARKodeButcherTable_Create(1, 1, 0, c, A, b, NULL);
+    B = ARKodeButcherTable_Create(1, 1, 0, c, A, b, nullptr);
     if (check_flag((void*)B, "ARKodeButcherTable_Create", 0)) { return kInvalidContext; }
 
     // Attach the Butcher table
-    flag = ARKStepSetTables(ctx.arkode_mem, 1, 0, B, NULL);
+    flag = ARKStepSetTables(ctx.arkode_mem, 1, 0, B, nullptr);
     if (check_flag(&flag, "ARKStepSetTables", 1)) { return kInvalidContext; }
 
     // Free the Butcher table
@@ -597,12 +538,13 @@ int InitUserData(UserData* udata)
   udata->epslin   = ZERO;  // use default (0.05)
 
   // Inverse of Jacobian diagonal for preconditioner
-  udata->d = NULL;
+  udata->d = nullptr;
 
   // Output variables
-  udata->output = 1;  // 0 = no output, 1 = stats output, 2 = output to disk
+  udata->output = 2;  // 0 = no output, 1 = stats output, 2 = output to disk
+  udata->ofstreams = nullptr;
   udata->nout   = 20; // Number of output times
-  udata->e      = NULL;
+  udata->e      = nullptr;
 
   // Timing variables
   udata->timing     = false;
@@ -622,14 +564,14 @@ int FreeUserData(UserData* udata)
   if (udata->d)
   {
     N_VDestroy(udata->d);
-    udata->d = NULL;
+    udata->d = nullptr;
   }
 
   // Free error vector
   if (udata->e)
   {
     N_VDestroy(udata->e);
-    udata->e = NULL;
+    udata->e = nullptr;
   }
 
   // Return success
@@ -893,15 +835,17 @@ int OpenOutput(UserData* udata)
     dout.close();
 
     // Open output streams for solution and error
-    udata->uout.open("heat2d_solution.txt");
-    udata->uout << scientific;
-    udata->uout << setprecision(numeric_limits<sunrealtype>::digits10);
+    udata->ofstreams = new OutputFileStreams;
+
+    udata->ofstreams->uout.open("heat2d_solution.txt");
+    udata->ofstreams->uout << scientific;
+    udata->ofstreams->uout << setprecision(numeric_limits<sunrealtype>::digits10);
 
     if (udata->forcing)
     {
-      udata->eout.open("heat2d_error.txt");
-      udata->eout << scientific;
-      udata->eout << setprecision(numeric_limits<sunrealtype>::digits10);
+      udata->ofstreams->eout.open("heat2d_error.txt");
+      udata->ofstreams->eout << scientific;
+      udata->ofstreams->eout << setprecision(numeric_limits<sunrealtype>::digits10);
     }
   }
 
@@ -938,12 +882,12 @@ int WriteOutput(sunrealtype t, N_Vector u, UserData* udata)
       sunrealtype* uarray = N_VGetArrayPointer(u);
       if (check_flag((void*)uarray, "N_VGetArrayPointer", 0)) { return -1; }
 
-      udata->uout << t << " ";
+      udata->ofstreams->uout << t << " ";
       for (sunindextype i = 0; i < udata->nodes; i++)
       {
-        udata->uout << uarray[i] << " ";
+        udata->ofstreams->uout << uarray[i] << " ";
       }
-      udata->uout << endl;
+      udata->ofstreams->uout << endl;
 
       if (udata->forcing)
       {
@@ -951,12 +895,12 @@ int WriteOutput(sunrealtype t, N_Vector u, UserData* udata)
         sunrealtype* earray = N_VGetArrayPointer(udata->e);
         if (check_flag((void*)earray, "N_VGetArrayPointer", 0)) { return -1; }
 
-        udata->eout << t << " ";
+        udata->ofstreams->eout << t << " ";
         for (sunindextype i = 0; i < udata->nodes; i++)
         {
-          udata->eout << earray[i] << " ";
+          udata->ofstreams->eout << earray[i] << " ";
         }
-        udata->eout << endl;
+        udata->ofstreams->eout << endl;
       }
     }
   }
@@ -988,8 +932,9 @@ int CloseOutput(UserData* udata)
   if (udata->output == 2)
   {
     // Close output streams
-    udata->uout.close();
-    if (udata->forcing) { udata->eout.close(); }
+    udata->ofstreams->uout.close();
+    if (udata->forcing) { udata->ofstreams->eout.close(); }
+    delete udata->ofstreams;
   }
 
   return 0;
@@ -1090,7 +1035,7 @@ int check_flag(void* flagvalue, const string funcname, int opt)
   // Check if the function returned a NULL pointer
   if (opt == 0)
   {
-    if (flagvalue == NULL)
+    if (flagvalue == nullptr)
     {
       cerr << endl
            << "ERROR: " << funcname << " returned NULL pointer" << endl

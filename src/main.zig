@@ -3,61 +3,232 @@ const builtin = @import("builtin");
 
 const VtuWriter = @import("vtu_writer");
 
-const c = @cImport({
+const s = @cImport({
     @cInclude("ark_heat2D.h");
 });
 
+const SundialsError = error{
+    ArgCorrupt, // argument provided is NULL or corrupted
+    ArgIncompatible, // argument provided is not compatible
+    ArgOutOfRange, // argument is out of the valid range
+    ArgWrongType, // argument provided is not the right type
+    ArgDimsMismatch, // argument dimensions do not agree
+    Generic, // an error occurred
+    Corrupt, // value is NULL or corrupt
+    OutOfRange, // Value is out of the expected range
+    FileOpen, // Unable to open file
+    OpFail, // an operation failed
+    MemFail, // a memory operation failed
+    MallocFail, // malloc returned NULL
+    ExtFail, // a failure occurred in an external library
+    DestroyFail, // a destroy function returned an error
+    NotImplemented, // operation is not implemented: function pointer is NULL
+    UserFcnFail, // the user provided callback function failed
+    ProfilerMapFull, // the number of profiler entries exceeded SUNPROFILER_MAX_ENTRIES
+    ProfilerMapGet, // unknown error getting SUNProfiler timer
+    ProfilerMapInsert, // unknown error inserting SUNProfiler timer
+    ProfilerMapKeyNotFound, // timer was not found in SUNProfiler
+    ProfilerMapSort, // error sorting SUNProfiler map
+    SunCtxCorrupt, // SUNContext is NULL or corrupt
+    MpiFail, // an MPI call returned something other than MPI_SUCCESS
+    Unreachable, // Reached code that should be unreachable
+    Unknown, // Unknown error occurred
+};
+
+const ArkodeError = error{
+    TStopReturn,
+    RootReturn,
+    Warning,
+    TooMuchWork,
+    TooMuchAcc,
+    ErrFailure,
+    ConvFailure,
+    LInitFail,
+    LSetupFail,
+    LSolveFail,
+    RhsFuncFail,
+    FirstRhsFuncErr,
+    ReptdRhsFuncErr,
+    UnrecRhsFuncErr,
+    RtFuncFail,
+    LFreeFail,
+    MassInitFail,
+    MassSetupFail,
+    MassSolveFail,
+    MassFreeFail,
+    MassMultFail,
+    ConstrFail,
+    MemFail,
+    MemNull,
+    IllInput,
+    NoMalloc,
+    BadK,
+    BadT,
+    BadDky,
+    TooClose,
+    VectorOpErr,
+    NlsInitFail,
+    NlsSetupFail,
+    NlsSetupRecvr,
+    NlsOpErr,
+    InnerStepAttachErr,
+    InnerStepFail,
+    OuterToInnerFail,
+    InnerToOuterFail,
+    PostProcessStepFail, // ARK_POSTPROCESS_FAIL equals ARK_POSTPROCESS_STEP_FAIL for backwards compatibility
+    PostProcessStageFail,
+    UserPredictFail,
+    InterpFail,
+    InvalidTable,
+    ContextErr,
+    RelaxFail,
+    RelaxMemNull,
+    RelaxFuncFail,
+    RelaxJacFail,
+    ControllerErr,
+    StepperUnsupported,
+    DomeigFail,
+    MaxStageLimitFail,
+    SunstepperErr,
+    StepDirectionErr,
+    UnrecognizedError,
+};
+
+const SolverError = SundialsError || ArkodeError;
+
+fn checkedCall(func: anytype, args: anytype) SolverError!void {
+    const result = @call(.auto, func, args);
+    if (result < s.SUN_SUCCESS or result < s.ARK_SUCCESS) {
+        return switch (result) {
+            s.SUN_ERR_ARG_CORRUPT => SolverError.ArgCorrupt,
+            s.SUN_ERR_ARG_INCOMPATIBLE => SolverError.ArgIncompatible,
+            s.SUN_ERR_ARG_OUTOFRANGE => SolverError.ArgOutOfRange,
+            s.SUN_ERR_ARG_WRONGTYPE => SolverError.ArgWrongType,
+            s.SUN_ERR_ARG_DIMSMISMATCH => SolverError.ArgDimsMismatch,
+            s.SUN_ERR_GENERIC => SolverError.Generic,
+            s.SUN_ERR_CORRUPT => SolverError.Corrupt,
+            s.SUN_ERR_OUTOFRANGE => SolverError.OutOfRange,
+            s.SUN_ERR_FILE_OPEN => SolverError.FileOpen,
+            s.SUN_ERR_OP_FAIL => SolverError.OpFail,
+            s.SUN_ERR_MEM_FAIL => SolverError.MemFail,
+            s.SUN_ERR_MALLOC_FAIL => SolverError.MallocFail,
+            s.SUN_ERR_EXT_FAIL => SolverError.ExtFail,
+            s.SUN_ERR_DESTROY_FAIL => SolverError.DestroyFail,
+            s.SUN_ERR_NOT_IMPLEMENTED => SolverError.NotImplemented,
+            s.SUN_ERR_USER_FCN_FAIL => SolverError.UserFcnFail,
+            s.SUN_ERR_PROFILER_MAPFULL => SolverError.ProfilerMapFull,
+            s.SUN_ERR_PROFILER_MAPGET => SolverError.ProfilerMapGet,
+            s.SUN_ERR_PROFILER_MAPINSERT => SolverError.ProfilerMapInsert,
+            s.SUN_ERR_PROFILER_MAPKEYNOTFOUND => SolverError.ProfilerMapKeyNotFound,
+            s.SUN_ERR_PROFILER_MAPSORT => SolverError.ProfilerMapSort,
+            s.SUN_ERR_SUNCTX_CORRUPT => SolverError.SunCtxCorrupt,
+            s.SUN_ERR_MPI_FAIL => SolverError.MpiFail,
+            s.SUN_ERR_UNREACHABLE => SolverError.Unreachable,
+            s.SUN_ERR_UNKNOWN => SolverError.Unknown,
+            s.ARK_TSTOP_RETURN => SolverError.TStopReturn,
+            s.ARK_ROOT_RETURN => SolverError.RootReturn,
+            s.ARK_WARNING => SolverError.Warning,
+            s.ARK_TOO_MUCH_WORK => SolverError.TooMuchWork,
+            s.ARK_TOO_MUCH_ACC => SolverError.TooMuchAcc,
+            s.ARK_ERR_FAILURE => SolverError.ErrFailure,
+            s.ARK_CONV_FAILURE => SolverError.ConvFailure,
+            s.ARK_LINIT_FAIL => SolverError.LInitFail,
+            s.ARK_LSETUP_FAIL => SolverError.LSetupFail,
+            s.ARK_LSOLVE_FAIL => SolverError.LSolveFail,
+            s.ARK_RHSFUNC_FAIL => SolverError.RhsFuncFail,
+            s.ARK_FIRST_RHSFUNC_ERR => SolverError.FirstRhsFuncErr,
+            s.ARK_REPTD_RHSFUNC_ERR => SolverError.ReptdRhsFuncErr,
+            s.ARK_UNREC_RHSFUNC_ERR => SolverError.UnrecRhsFuncErr,
+            s.ARK_RTFUNC_FAIL => SolverError.RtFuncFail,
+            s.ARK_LFREE_FAIL => SolverError.LFreeFail,
+            s.ARK_MASSINIT_FAIL => SolverError.MassInitFail,
+            s.ARK_MASSSETUP_FAIL => SolverError.MassSetupFail,
+            s.ARK_MASSSOLVE_FAIL => SolverError.MassSolveFail,
+            s.ARK_MASSFREE_FAIL => SolverError.MassFreeFail,
+            s.ARK_MASSMULT_FAIL => SolverError.MassMultFail,
+            s.ARK_CONSTR_FAIL => SolverError.ConstrFail,
+            s.ARK_MEM_FAIL => SolverError.MemFail,
+            s.ARK_MEM_NULL => SolverError.MemNull,
+            s.ARK_ILL_INPUT => SolverError.IllInput,
+            s.ARK_NO_MALLOC => SolverError.NoMalloc,
+            s.ARK_BAD_K => SolverError.BadK,
+            s.ARK_BAD_T => SolverError.BadT,
+            s.ARK_BAD_DKY => SolverError.BadDky,
+            s.ARK_TOO_CLOSE => SolverError.TooClose,
+            s.ARK_VECTOROP_ERR => SolverError.VectorOpErr,
+            s.ARK_NLS_INIT_FAIL => SolverError.NlsInitFail,
+            s.ARK_NLS_SETUP_FAIL => SolverError.NlsSetupFail,
+            s.ARK_NLS_SETUP_RECVR => SolverError.NlsSetupRecvr,
+            s.ARK_NLS_OP_ERR => SolverError.NlsOpErr,
+            s.ARK_INNERSTEP_ATTACH_ERR => SolverError.InnerStepAttachErr,
+            s.ARK_INNERSTEP_FAIL => SolverError.InnerStepFail,
+            s.ARK_OUTERTOINNER_FAIL => SolverError.OuterToInnerFail,
+            s.ARK_INNERTOOUTER_FAIL => SolverError.InnerToOuterFail,
+            s.ARK_POSTPROCESS_STEP_FAIL => SolverError.PostProcessStepFail,
+            s.ARK_POSTPROCESS_STAGE_FAIL => SolverError.PostProcessStageFail,
+            s.ARK_USER_PREDICT_FAIL => SolverError.UserPredictFail,
+            s.ARK_INTERP_FAIL => SolverError.InterpFail,
+            s.ARK_INVALID_TABLE => SolverError.InvalidTable,
+            s.ARK_CONTEXT_ERR => SolverError.ContextErr,
+            s.ARK_RELAX_FAIL => SolverError.RelaxFail,
+            s.ARK_RELAX_MEM_NULL => SolverError.RelaxMemNull,
+            s.ARK_RELAX_FUNC_FAIL => SolverError.RelaxFuncFail,
+            s.ARK_RELAX_JAC_FAIL => SolverError.RelaxJacFail,
+            s.ARK_CONTROLLER_ERR => SolverError.ControllerErr,
+            s.ARK_STEPPER_UNSUPPORTED => SolverError.StepperUnsupported,
+            s.ARK_DOMEIG_FAIL => SolverError.DomeigFail,
+            s.ARK_MAX_STAGE_LIMIT_FAIL => SolverError.MaxStageLimitFail,
+            s.ARK_SUNSTEPPER_ERR => SolverError.SunstepperErr,
+            s.ARK_STEP_DIRECTION_ERR => SolverError.StepDirectionErr,
+            s.ARK_UNRECOGNIZED_ERROR => SolverError.UnrecognizedError,
+            else => SolverError.Unknown,
+        };
+    }
+}
+
+fn funcPtrRetType(func: anytype) type {
+    return @typeInfo(@TypeOf(func)).@"fn".return_type.?;
+}
+
+fn checkedMemOp(func: anytype, args: anytype) !funcPtrRetType(func) {
+    const result = @call(.auto, func, args);
+    if (result == null) {
+        return error.MemoryIssue;
+    }
+    return result;
+}
+
 pub fn main() !void {
-    var ctx = c.ark_heat2D_init(0, null);
+    var ctx = s.ark_heat2D_init(0, null);
     if (ctx.udata == null or ctx.arkode_mem == null) {
-        return error.GeneralFailure;
+        return SolverError.Generic;
     }
 
-    // // -----------------------
-    // // Loop over output times
-    // // -----------------------
+    var t: s.sunrealtype = 0;
+    const dTout: s.sunrealtype = ctx.udata.*.tf / @as(f64, @floatFromInt(ctx.udata.*.nout));
+    var tout: s.sunrealtype = dTout;
 
-    // sunrealtype t     = ZERO;
-    // sunrealtype dTout = udata->tf / udata->nout;
-    // sunrealtype tout  = dTout;
+    // Initial output
+    try checkedCall(s.OpenOutput, .{ctx.udata});
+    try checkedCall(s.WriteOutput, .{ t, ctx.u, ctx.udata });
 
-    // // Initial output
-    // flag = OpenOutput(udata);
-    // if (check_flag(&flag, "OpenOutput", 1)) { return 1; }
+    var timer = std.time.Timer.start() catch unreachable;
+    for (0..@intCast(ctx.udata.*.nout)) |_| {
+        try checkedCall(s.ARKodeEvolve, .{ ctx.arkode_mem, tout, ctx.u, &t, s.ARK_NORMAL });
 
-    // flag = WriteOutput(t, u, udata);
-    // if (check_flag(&flag, "WriteOutput", 1)) { return 1; }
+        // Update timer
+        ctx.udata.*.evolvetime += @as(f64, @floatFromInt(timer.lap())) / @as(f64, @floatFromInt(std.time.ns_per_s));
 
-    // for (int iout = 0; iout < udata->nout; iout++)
-    // {
-    //   // Start timer
-    //   t1 = chrono::steady_clock::now();
+        // Output solution and error
+        try checkedCall(s.WriteOutput, .{ t, ctx.u, ctx.udata });
 
-    //   // Evolve in time
-    //   flag = ARKodeEvolve(arkode_mem, tout, u, &t, ARK_NORMAL);
-    //   if (check_flag(&flag, "ARKodeEvolve", 1)) { break; }
+        // Update output time
+        tout += dTout;
+        tout = if (tout > ctx.udata.*.tf) ctx.udata.*.tf else tout;
+    }
 
-    //   // Stop timer
-    //   t2 = chrono::steady_clock::now();
-
-    //   // Update timer
-    //   udata->evolvetime += chrono::duration<double>(t2 - t1).count();
-
-    //   // Output solution and error
-    //   flag = WriteOutput(t, u, udata);
-    //   if (check_flag(&flag, "WriteOutput", 1)) { return 1; }
-
-    //   // Update output time
-    //   tout += dTout;
-    //   tout = (tout > udata->tf) ? udata->tf : tout;
-    // }
-
-    // // Close output
-    // flag = CloseOutput(udata);
-    // if (check_flag(&flag, "CloseOutput", 1)) { return 1; }
-
-    const ret = c.ark_heat2D_finish(&ctx, 0);
+    const ret = s.ark_heat2D_finish(&ctx, 0);
     if (ret != 0) {
-        return error.GeneralFailure;
+        return SolverError.Generic;
     }
 }
