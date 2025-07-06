@@ -10,6 +10,10 @@
             .url = "https://github.com/mm318/arkode-zig/archive/26a51b3243c6f9eaa45d51db2f3ac778f8ca8007.zip",
             .hash = "arkode-6.2.1-5YSPKHhZlgB-Q06OhXQLj_pN0D123_Xtjv0JDEb3xR1W",
         },
+        .vtu_writer = .{
+            .url = "https://github.com/mm318/vtu-writer/archive/51362603052ba2e3f0a65d35c903b82003fb2494.zip",
+            .hash = "vtu_writer-0.0.1-jCl2qc5vAAC5Qu2CnXmyrnPlmkjHqutUUAMQowukq9GF",
+        },
     },
 
     .paths = .{

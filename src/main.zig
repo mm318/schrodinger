@@ -198,7 +198,77 @@ fn checkedMemOp(func: anytype, args: anytype) !funcPtrRetType(func) {
     return result;
 }
 
+fn index2coord(domain: *const s.UserData, i: usize) struct { usize, usize } {
+    const ix = i % @as(usize, @intCast(domain.nx));
+    const iy = @divFloor(i, @as(usize, @intCast(domain.nx)));
+    return .{ ix, iy };
+}
+
+fn coord2index(domain: *const s.UserData, ix: usize, iy: usize) usize {
+    return s.IDX(ix, iy, @as(usize, @intCast(domain.nx)));
+}
+
+const Plotter = struct {
+    mesh_builder: VtuWriter.UnstructuredMeshBuilder,
+
+    fn init(allocator: std.mem.Allocator, domain: *const s.UserData) !Plotter {
+        var self = Plotter{ .mesh_builder = VtuWriter.UnstructuredMeshBuilder.init(allocator) };
+
+        const domain_size: usize = @intCast(domain.nodes);
+        try self.mesh_builder.reservePoints(domain_size);
+        try self.mesh_builder.reserveCells(.VTK_QUAD, @intCast((domain.nx - 1) * (domain.ny - 1)));
+
+        for (0..domain_size) |i| {
+            const coord = index2coord(domain, i);
+            _ = try self.mesh_builder.addPoint(.{
+                domain.dx * @as(f64, @floatFromInt(coord[0])),
+                domain.dy * @as(f64, @floatFromInt(coord[1])),
+                0,
+            });
+        }
+
+        for (0..@intCast(domain.ny - 1)) |iy| {
+            for (0..@intCast(domain.nx - 1)) |ix| {
+                try self.mesh_builder.addCell(.VTK_QUAD, .{
+                    @intCast(coord2index(domain, ix, iy)),
+                    @intCast(coord2index(domain, ix + 1, iy)),
+                    @intCast(coord2index(domain, ix + 1, iy + 1)),
+                    @intCast(coord2index(domain, ix, iy + 1)),
+                });
+            }
+        }
+
+        return self;
+    }
+
+    fn plot(self: *const Plotter, allocator: std.mem.Allocator, u: s.N_Vector, filename: []const u8) !void {
+        const mesh = self.mesh_builder.getUnstructuredMesh();
+
+        const u_array = checkedMemOp(s.N_VGetArrayPointer, .{u}) catch unreachable;
+        const u_array_size = s.N_VGetLocalLength(u);
+        var point_data: []const f64 = undefined;
+        point_data.ptr = u_array;
+        point_data.len = @intCast(u_array_size);
+        const data_sets = [_]VtuWriter.DataSet{
+            .{ "Temperature", VtuWriter.DataSetType.PointData, 1, point_data },
+        };
+
+        try VtuWriter.writeVtu(allocator, filename, mesh, &data_sets, .rawbinarycompressed);
+    }
+
+    fn deinit(self: *Plotter) void {
+        self.mesh_builder.deinit();
+    }
+};
+
 pub fn main() !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    const allocator = gpa.allocator();
+    defer {
+        const deinit_status = gpa.deinit();
+        if (deinit_status == .leak) std.log.warn("memory leaked!", .{});
+    }
+
     var ctx = s.ark_heat2D_init(0, null);
     if (ctx.udata == null or ctx.arkode_mem == null) {
         return SolverError.Generic;
@@ -208,19 +278,27 @@ pub fn main() !void {
     const dTout: s.sunrealtype = ctx.udata.*.tf / @as(f64, @floatFromInt(ctx.udata.*.nout));
     var tout: s.sunrealtype = dTout;
 
+    var plotter = try Plotter.init(allocator, &ctx.udata.*);
+    defer plotter.deinit();
+    var strbuf: [256]u8 = undefined;
+    var filename = try std.fmt.bufPrint(&strbuf, "heat2d_t{d:0>10.6}.vtu", .{t});
+
     // Initial output
     try checkedCall(s.OpenOutput, .{ctx.udata});
     try checkedCall(s.WriteOutput, .{ t, ctx.u, ctx.udata });
+    try plotter.plot(allocator, ctx.u, filename);
 
-    var timer = std.time.Timer.start() catch unreachable;
+    var timer = try std.time.Timer.start();
     for (0..@intCast(ctx.udata.*.nout)) |_| {
         try checkedCall(s.ARKodeEvolve, .{ ctx.arkode_mem, tout, ctx.u, &t, s.ARK_NORMAL });
 
         // Update timer
-        ctx.udata.*.evolvetime += @as(f64, @floatFromInt(timer.lap())) / @as(f64, @floatFromInt(std.time.ns_per_s));
+        ctx.udata.*.evolvetime += @as(f64, @floatFromInt(timer.lap())) / std.time.ns_per_s;
 
         // Output solution and error
         try checkedCall(s.WriteOutput, .{ t, ctx.u, ctx.udata });
+        filename = try std.fmt.bufPrint(&strbuf, "heat2d_t{d:0>10.6}.vtu", .{t});
+        try plotter.plot(allocator, ctx.u, filename);
 
         // Update output time
         tout += dTout;

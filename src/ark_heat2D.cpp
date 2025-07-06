@@ -63,9 +63,6 @@
 #define ONE  SUN_RCONST(1.0)
 #define TWO  SUN_RCONST(2.0)
 
-// Macro to access (x,y) location in 1D NVector array
-#define IDX(x, y, n) ((n) * (y) + (x))
-
 using namespace std;
 
 // -----------------------------------------------------------------------------

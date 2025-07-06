@@ -8,6 +8,10 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    const vtu_dep = b.dependency("vtu_writer", .{
+        .target = target,
+        .optimize = optimize,
+    });
 
     // We will create a module for our other entry point, 'main.zig'.
     const exe_mod = b.createModule(.{
@@ -18,6 +22,7 @@ pub fn build(b: *std.Build) void {
     });
     exe_mod.addCSourceFile(.{ .file = b.path("src/ark_heat2D.cpp") });
     exe_mod.addIncludePath(b.path("src"));
+    exe_mod.addImport("vtu_writer", vtu_dep.module("vtu_writer"));
     exe_mod.linkLibrary(arkode_dep.artifact("arkode"));
 
     // This creates another `std.Build.Step.Compile` that builds an executable

@@ -9,14 +9,15 @@
 extern "C" {
 #endif
 
-
+// Macro to access (x,y) location in 1D NVector array
+#define IDX(x, y, n) ((n) * (y) + (x))
 
 struct OutputFileStreams;
 typedef struct OutputFileStreams OutputFileStreams;
 
 struct UserData
 {
-    // Diffusion coefficients in the x and y directions
+  // Diffusion coefficients in the x and y directions
   sunrealtype kx;
   sunrealtype ky;
 
