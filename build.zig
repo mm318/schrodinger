@@ -18,10 +18,7 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
-        .link_libcpp = true,
     });
-    exe_mod.addCSourceFile(.{ .file = b.path("src/ark_heat2D.cpp") });
-    exe_mod.addIncludePath(b.path("src"));
     exe_mod.addImport("vtu_writer", vtu_dep.module("vtu_writer"));
     exe_mod.linkLibrary(arkode_dep.artifact("arkode"));
 
