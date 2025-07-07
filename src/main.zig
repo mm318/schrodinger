@@ -211,22 +211,23 @@ const Domain = struct {
     const Coord = struct {
         ix: usize,
         iy: usize,
+        iz: usize,
     };
 
     // Diffusion coefficients in the x and y directions
     kx: s.sunrealtype,
     ky: s.sunrealtype,
-
-    // Final time
-    tf: s.sunrealtype,
+    kz: s.sunrealtype,
 
     // Upper bounds in x and y directions
     xu: s.sunrealtype,
     yu: s.sunrealtype,
+    zu: s.sunrealtype,
 
     // Number of nodes in the x and y directions
     nx: s.sunindextype,
     ny: s.sunindextype,
+    nz: s.sunindextype,
 
     // Total number of nodes
     nodes: s.sunindextype,
@@ -234,34 +235,37 @@ const Domain = struct {
     // Mesh spacing in the x and y directions
     dx: s.sunrealtype,
     dy: s.sunrealtype,
+    dz: s.sunrealtype,
 
-    // Enable/disable forcing
-    forcing: bool,
+    // Final time
+    tf: s.sunrealtype,
 
-    fn init() Domain {
+    fn init(n: s.sunindextype) Domain {
         var domain: Domain = undefined;
 
         // Diffusion coefficient
         domain.kx = ONE;
         domain.ky = ONE;
-
-        // Final time
-        domain.tf = ONE;
+        domain.kz = ONE;
 
         // Upper bounds in x and y directions
         domain.xu = ONE;
         domain.yu = ONE;
+        domain.zu = ONE;
 
         // Number of nodes in the x and y directions
-        domain.nx = 32;
-        domain.ny = 32;
-        domain.nodes = domain.nx * domain.ny;
+        domain.nx = n;
+        domain.ny = n;
+        domain.nz = n;
+        domain.nodes = domain.nx * domain.ny * domain.nz;
 
         // Mesh spacing in the x and y directions
         domain.dx = domain.xu / @as(f64, @floatFromInt(domain.nx - 1));
         domain.dy = domain.yu / @as(f64, @floatFromInt(domain.ny - 1));
+        domain.dz = domain.zu / @as(f64, @floatFromInt(domain.nz - 1));
 
-        domain.forcing = true;
+        // Final time
+        domain.tf = ONE;
 
         return domain;
     }
@@ -273,20 +277,32 @@ const Domain = struct {
     fn coord2index(self: Domain, c: Coord) usize {
         std.debug.assert(c.ix < self.nx);
         std.debug.assert(c.iy < self.ny);
-        return c.iy * @as(usize, @intCast(self.nx)) + c.ix;
+        std.debug.assert(c.iz < self.nz);
+
+        // Shortcuts to number of nodes
+        const nx: usize = @intCast(self.nx);
+        const ny: usize = @intCast(self.ny);
+
+        return c.iz * (nx * ny) + c.iy * nx + c.ix;
     }
 
     fn index2coord(self: Domain, i: usize) Coord {
         std.debug.assert(i < self.size());
+
+        // Shortcuts to number of nodes
+        const nx: usize = @intCast(self.nx);
+        const ny: usize = @intCast(self.ny);
+
         return .{
-            .ix = i % @as(usize, @intCast(self.nx)),
-            .iy = @divFloor(i, @as(usize, @intCast(self.nx))) % @as(usize, @intCast(self.ny)),
+            .ix = i % nx,
+            .iy = @divFloor(i, nx) % ny,
+            .iz = @divFloor(i, nx * ny),
         };
     }
 
     // f routine to compute the ODE RHS function f(t,y).
     export fn f(
-        t: s.sunrealtype,
+        _: s.sunrealtype,
         u: s.N_Vector,
         u_dot: s.N_Vector,
         user_data: ?*anyopaque,
@@ -296,66 +312,60 @@ const Domain = struct {
 
         // Access problem data
         const solver: *Solver = @alignCast(@ptrCast(user_data));
-        const udata: *const Domain = solver.domain;
+        const p: *const Domain = solver.domain;
 
-        // Shortcuts to number of nodes
-        const nx: usize = @intCast(udata.nx);
-        const ny: usize = @intCast(udata.ny);
+        const U = checkedMemOp(s.N_VGetArrayPointer, .{u}) catch return 1;
+        const Udot = checkedMemOp(s.N_VGetArrayPointer, .{u_dot}) catch return 1;
+        s.N_VConst(0.0, u_dot); // Initialize ydot to zero
 
-        // Constants for computing diffusion term
-        const cx: s.sunrealtype = udata.kx / (udata.dx * udata.dx);
-        const cy: s.sunrealtype = udata.ky / (udata.dy * udata.dy);
-        const cc: s.sunrealtype = -TWO * (cx + cy);
+        // iterate over domain, computing all equations
+        const c1x: s.sunrealtype = p.kx / p.dx / p.dx;
+        const c2x: s.sunrealtype = -2.0 * c1x;
+        const c1y: s.sunrealtype = p.ky / p.dy / p.dy;
+        const c2y: s.sunrealtype = -2.0 * c1y;
+        const c1z: s.sunrealtype = p.kz / p.dz / p.dz;
+        const c2z: s.sunrealtype = -2.0 * c1z;
 
-        // Access data arrays
-        const uarray = checkedMemOp(s.N_VGetArrayPointer, .{u}) catch return -1;
-        const farray = checkedMemOp(s.N_VGetArrayPointer, .{u_dot}) catch return -1;
-
-        // Initialize rhs vector to zero (handles boundary conditions)
-        s.N_VConst(ZERO, u_dot);
-
-        // Iterate over domain interior and compute rhs forcing term
-        if (udata.forcing) {
-            const bx: s.sunrealtype = (udata.kx) * TWO * PI * PI;
-            const by: s.sunrealtype = (udata.ky) * TWO * PI * PI;
-
-            const sin_t_cos_t: s.sunrealtype = std.math.sin(PI * t) * std.math.cos(PI * t);
-            const cos_sqr_t: s.sunrealtype = std.math.cos(PI * t) * std.math.cos(PI * t);
-
-            for (1..(ny - 1)) |j| {
-                for (1..(nx - 1)) |i| {
-                    const x: s.sunrealtype = @as(s.sunrealtype, @floatFromInt(i)) * udata.dx;
-                    const y: s.sunrealtype = @as(s.sunrealtype, @floatFromInt(j)) * udata.dy;
-
-                    const sin_sqr_x: s.sunrealtype = std.math.sin(PI * x) * std.math.sin(PI * x);
-                    const sin_sqr_y: s.sunrealtype = std.math.sin(PI * y) * std.math.sin(PI * y);
-
-                    const cos_sqr_x: s.sunrealtype = std.math.cos(PI * x) * std.math.cos(PI * x);
-                    const cos_sqr_y: s.sunrealtype = std.math.cos(PI * y) * std.math.cos(PI * y);
-
-                    farray[udata.coord2index(.{ .ix = i, .iy = j })] =
-                        -TWO * PI * sin_sqr_x * sin_sqr_y * sin_t_cos_t -
-                        bx * (cos_sqr_x - sin_sqr_x) * sin_sqr_y * cos_sqr_t -
-                        by * (cos_sqr_y - sin_sqr_y) * sin_sqr_x * cos_sqr_t;
+        var i: isize = 0;
+        var x_prev = i - 1;
+        var x_next = i + 1;
+        var y_prev = i - @as(isize, @intCast(p.nx));
+        var y_next = i + @as(isize, @intCast(p.nx));
+        var z_prev = i - @as(isize, @intCast(p.nx * p.ny));
+        var z_next = i + @as(isize, @intCast(p.nx * p.ny));
+        for (0..@intCast(p.nz)) |iz| {
+            for (0..@intCast(p.ny)) |iy| {
+                for (0..@intCast(p.nx)) |ix| {
+                    if (ix == 0 or ix == p.nx - 1 or iy == 0 or iy == p.ny - 1 or iz == 0 or iz == p.nz - 1) {
+                        Udot[@intCast(i)] = 0.0; // boundary condition: adiabatic
+                    } else {
+                        Udot[@intCast(i)] =
+                            c1x * U[@intCast(x_prev)] + c2x * U[@intCast(i)] + c1x * U[@intCast(x_next)] +
+                            c1y * U[@intCast(y_prev)] + c2y * U[@intCast(i)] + c1y * U[@intCast(y_next)] +
+                            c1z * U[@intCast(z_prev)] + c2z * U[@intCast(i)] + c1z * U[@intCast(z_next)];
+                    }
+                    i += 1;
+                    x_prev += 1;
+                    x_next += 1;
+                    y_prev += 1;
+                    y_next += 1;
+                    z_prev += 1;
+                    z_next += 1;
                 }
             }
         }
 
-        // Iterate over domain interior and add rhs diffusion term
-        for (1..(ny - 1)) |j| {
-            for (1..(nx - 1)) |i| {
-                farray[udata.coord2index(.{ .ix = i, .iy = j })] +=
-                    cc * uarray[udata.coord2index(.{ .ix = i, .iy = j })] +
-                    cx * (uarray[udata.coord2index(.{ .ix = i - 1, .iy = j })] + uarray[udata.coord2index(.{ .ix = i + 1, .iy = j })]) +
-                    cy * (uarray[udata.coord2index(.{ .ix = i, .iy = j - 1 })] + uarray[udata.coord2index(.{ .ix = i, .iy = j + 1 })]);
-            }
-        }
+        const isrc = p.coord2index(.{
+            .ix = @intCast(@divTrunc(p.nx, 2)),
+            .iy = @intCast(@divTrunc(p.ny, 2)),
+            .iz = @intCast(@divTrunc(p.nz, 2)),
+        }); // heat source location
+        Udot[isrc] += TWO; // source term
 
         // Update timer
         solver.rhstime += @as(f64, @floatFromInt(timer.read())) / std.time.ns_per_s;
 
-        // Return success
-        return 0;
+        return 0; // return with success
     }
 
     fn printData(self: Domain) void {
@@ -364,46 +374,18 @@ const Domain = struct {
         std.log.info(" --------------------------------- ", .{});
         std.log.info("  kx             = {}", .{self.kx});
         std.log.info("  ky             = {}", .{self.ky});
+        std.log.info("  kz             = {}", .{self.kz});
         std.log.info("  tf             = {}", .{self.tf});
         std.log.info("  xu             = {}", .{self.xu});
         std.log.info("  yu             = {}", .{self.yu});
+        std.log.info("  zu             = {}", .{self.zu});
         std.log.info("  nx             = {}", .{self.nx});
         std.log.info("  ny             = {}", .{self.ny});
+        std.log.info("  nz             = {}", .{self.nz});
         std.log.info("  dx             = {}", .{self.dx});
         std.log.info("  dy             = {}", .{self.dy});
-        std.log.info("  forcing        = {}", .{self.forcing});
+        std.log.info("  dz             = {}", .{self.dz});
         std.log.info(" --------------------------------- ", .{});
-    }
-
-    fn solution(self: Domain, t: s.sunrealtype, u: s.N_Vector) !void {
-        // Constants for computing solution
-        const cos_sqr_t: s.sunrealtype = std.math.cos(PI * t) * std.math.cos(PI * t);
-
-        // Initialize u to zero (handles boundary conditions)
-        s.N_VConst(ZERO, u);
-
-        const uarray = try checkedMemOp(s.N_VGetArrayPointer, .{u});
-
-        for (1..@intCast(self.ny - 1)) |j| {
-            for (1..@intCast(self.nx - 1)) |i| {
-                const x: s.sunrealtype = @as(s.sunrealtype, @floatFromInt(i)) * self.dx;
-                const y: s.sunrealtype = @as(s.sunrealtype, @floatFromInt(j)) * self.dy;
-
-                const sin_sqr_x: s.sunrealtype = std.math.sin(PI * x) * std.math.sin(PI * x);
-                const sin_sqr_y: s.sunrealtype = std.math.sin(PI * y) * std.math.sin(PI * y);
-
-                uarray[self.coord2index(.{ .ix = i, .iy = j })] = sin_sqr_x * sin_sqr_y * cos_sqr_t;
-            }
-        }
-    }
-
-    fn solutionError(self: Domain, t: s.sunrealtype, u: s.N_Vector, e: s.N_Vector) !void {
-        // Compute true solution
-        try self.solution(t, e);
-
-        // Compute absolute error
-        s.N_VLinearSum(ONE, u, -ONE, e, e);
-        s.N_VAbs(e, e);
     }
 };
 
@@ -498,7 +480,6 @@ const Solver = struct {
     domain: *const Domain,
     d: s.N_Vector, // Inverse of Jacobian diagonal for preconditioner
     u: s.N_Vector, // vector for storing solution
-    e: s.N_Vector, // error vector
 
     // Timing variables
     evolvetime: f64 = 0.0,
@@ -529,7 +510,8 @@ const Solver = struct {
         // Constants for computing diffusion
         const cx: s.sunrealtype = udata.kx / (udata.dx * udata.dx);
         const cy: s.sunrealtype = udata.ky / (udata.dy * udata.dy);
-        const cc: s.sunrealtype = -TWO * (cx + cy);
+        const cz: s.sunrealtype = udata.kz / (udata.dz * udata.dz);
+        const cc: s.sunrealtype = -TWO * (cx + cy + cz);
 
         // Set all entries of d to the inverse diagonal values of interior
         // (since boundary RHS is 0, set boundary diagonals to the same)
@@ -596,11 +578,8 @@ const Solver = struct {
         // Create vector for solution
         solver.u = try checkedMemOp(s.N_VNew_Serial, .{ domain.nodes, solver.ctx });
 
-        // Set initial condition
-        try domain.solution(ZERO, solver.u);
-
-        // Create vector for error
-        solver.e = try checkedMemOp(s.N_VClone, .{solver.u});
+        // Set initial condition: Initialize u to zero (handles boundary conditions)
+        s.N_VConst(ZERO, solver.u);
 
         // ---------------------
         // Create linear solver
@@ -817,7 +796,6 @@ const Solver = struct {
         _ = s.SUNLinSolFree(self.LS); // Free linear solver
         s.N_VDestroy(self.u); // Free vectors
         s.N_VDestroy(self.d); // Free vectors
-        s.N_VDestroy(self.e); // Free vectors
         _ = s.SUNAdaptController_Destroy(self.C); // Free time adaptivity controller
         _ = s.SUNContext_Free(&self.ctx); // Free context
 
@@ -828,13 +806,8 @@ const Solver = struct {
 fn OpenOutput(solver: *const Solver) void {
     // Header for status output
     if (solver.options.output > 0) {
-        if (solver.domain.forcing) {
-            std.log.info("          t                     ||u||_rms                max error      ", .{});
-            std.log.info(" -----------------------------------------------------------------------", .{});
-        } else {
-            std.log.info("          t                     ||u||_rms      ", .{});
-            std.log.info(" ----------------------------------------------", .{});
-        }
+        std.log.info("          t                     ||u||_rms      ", .{});
+        std.log.info(" ----------------------------------------------", .{});
     }
 }
 
@@ -848,30 +821,14 @@ fn WriteOutput(solver: *const Solver, t: s.sunrealtype) void {
         );
 
         // Output current status
-        if (udata.forcing) {
-            // Compute the error
-            udata.solutionError(t, solver.u, solver.e) catch {
-                std.log.err("unable to calculate solution error!", .{});
-            };
-
-            // Compute max error
-            const max: s.sunrealtype = s.N_VMaxNorm(solver.e);
-
-            std.log.info("{e:22.15}{e:25.15}{e:25.15}", .{ t, urms, max });
-        } else {
-            std.log.info("{e:22.15}{e:25.15}", .{ t, urms });
-        }
+        std.log.info("{e:22.15}{e:25.15}", .{ t, urms });
     }
 }
 
 fn CloseOutput(solver: *const Solver) void {
     // Footer for status output
     if (solver.options.output > 0) {
-        if (solver.domain.forcing) {
-            std.log.info(" -----------------------------------------------------------------------", .{});
-        } else {
-            std.log.info(" ----------------------------------------------", .{});
-        }
+        std.log.info(" ----------------------------------------------", .{});
     }
 }
 
@@ -884,25 +841,31 @@ const Plotter = struct {
         var self = Plotter{ .mesh_builder = VtuWriter.UnstructuredMeshBuilder.init(allocator) };
 
         try self.mesh_builder.reservePoints(domain.size());
-        try self.mesh_builder.reserveCells(.VTK_QUAD, @intCast((domain.nx - 1) * (domain.ny - 1)));
+        try self.mesh_builder.reserveCells(.VTK_HEXAHEDRON, @intCast((domain.nx - 1) * (domain.ny - 1) * (domain.nz - 1)));
 
         for (0..domain.size()) |i| {
             const coord = domain.index2coord(i);
             _ = try self.mesh_builder.addPoint(.{
                 domain.dx * @as(f64, @floatFromInt(coord.ix)),
                 domain.dy * @as(f64, @floatFromInt(coord.iy)),
-                0,
+                domain.dz * @as(f64, @floatFromInt(coord.iz)),
             });
         }
 
-        for (0..@intCast(domain.ny - 1)) |iy| {
-            for (0..@intCast(domain.nx - 1)) |ix| {
-                try self.mesh_builder.addCell(.VTK_QUAD, .{
-                    @intCast(domain.coord2index(.{ .ix = ix, .iy = iy })),
-                    @intCast(domain.coord2index(.{ .ix = ix + 1, .iy = iy })),
-                    @intCast(domain.coord2index(.{ .ix = ix + 1, .iy = iy + 1 })),
-                    @intCast(domain.coord2index(.{ .ix = ix, .iy = iy + 1 })),
-                });
+        for (0..@intCast(domain.nz - 1)) |iz| {
+            for (0..@intCast(domain.ny - 1)) |iy| {
+                for (0..@intCast(domain.nx - 1)) |ix| {
+                    try self.mesh_builder.addCell(.VTK_HEXAHEDRON, .{
+                        @intCast(domain.coord2index(.{ .ix = ix, .iy = iy, .iz = iz })),
+                        @intCast(domain.coord2index(.{ .ix = ix + 1, .iy = iy, .iz = iz })),
+                        @intCast(domain.coord2index(.{ .ix = ix + 1, .iy = iy + 1, .iz = iz })),
+                        @intCast(domain.coord2index(.{ .ix = ix, .iy = iy + 1, .iz = iz })),
+                        @intCast(domain.coord2index(.{ .ix = ix, .iy = iy, .iz = iz + 1 })),
+                        @intCast(domain.coord2index(.{ .ix = ix + 1, .iy = iy, .iz = iz + 1 })),
+                        @intCast(domain.coord2index(.{ .ix = ix + 1, .iy = iy + 1, .iz = iz + 1 })),
+                        @intCast(domain.coord2index(.{ .ix = ix, .iy = iy + 1, .iz = iz + 1 })),
+                    });
+                }
             }
         }
 
@@ -951,7 +914,7 @@ pub fn main() !void {
         if (deinit_status == .leak) std.log.warn("memory leaked!", .{});
     }
 
-    var domain = Domain.init();
+    var domain = Domain.init(32);
     domain.printData();
 
     const solver = try Solver.init(allocator, &domain, Solver.Options.default());
@@ -1012,13 +975,58 @@ test "index2coord" {
     var prng = std.Random.DefaultPrng.init(seed);
     const rand = prng.random();
 
-    const N = rand.intRangeAtMost(usize, 101, 201);
-    const p = Domain.init(1.0, N);
+    const N = rand.intRangeAtMost(s.sunindextype, 101, 201);
+    const p = Domain.init(N);
 
     for (0..100) |_| {
         const i = rand.uintLessThan(usize, p.size());
         const c = p.index2coord(i);
         const i_new = p.coord2index(c);
         try std.testing.expectEqual(i, i_new);
+    }
+}
+
+test "index iteration" {
+    const p = Domain.init(201);
+
+    var i: isize = 0;
+    var x_prev = i - 1;
+    var x_next = i + 1;
+    var y_prev = i - @as(isize, @intCast(p.nx));
+    var y_next = i + @as(isize, @intCast(p.nx));
+    var z_prev = i - @as(isize, @intCast(p.nx * p.ny));
+    var z_next = i + @as(isize, @intCast(p.nx * p.ny));
+    for (0..@intCast(p.nz)) |iz| {
+        for (0..@intCast(p.ny)) |iy| {
+            for (0..@intCast(p.nx)) |ix| {
+                try std.testing.expectEqual(p.coord2index(.{ .ix = ix, .iy = iy, .iz = iz }), @as(usize, @intCast(i)));
+                if (ix > 0) {
+                    try std.testing.expectEqual(p.coord2index(.{ .ix = ix - 1, .iy = iy, .iz = iz }), @as(usize, @intCast(x_prev)));
+                }
+                if (ix + 1 < p.nx) {
+                    try std.testing.expectEqual(p.coord2index(.{ .ix = ix + 1, .iy = iy, .iz = iz }), @as(usize, @intCast(x_next)));
+                }
+                if (iy > 0) {
+                    try std.testing.expectEqual(p.coord2index(.{ .ix = ix, .iy = iy - 1, .iz = iz }), @as(usize, @intCast(y_prev)));
+                }
+                if (iy + 1 < p.ny) {
+                    try std.testing.expectEqual(p.coord2index(.{ .ix = ix, .iy = iy + 1, .iz = iz }), @as(usize, @intCast(y_next)));
+                }
+                if (iz > 0) {
+                    try std.testing.expectEqual(p.coord2index(.{ .ix = ix, .iy = iy, .iz = iz - 1 }), @as(usize, @intCast(z_prev)));
+                }
+                if (iz + 1 < p.nz) {
+                    try std.testing.expectEqual(p.coord2index(.{ .ix = ix, .iy = iy, .iz = iz + 1 }), @as(usize, @intCast(z_next)));
+                }
+
+                i += 1;
+                x_prev += 1;
+                x_next += 1;
+                y_prev += 1;
+                y_next += 1;
+                z_prev += 1;
+                z_next += 1;
+            }
+        }
     }
 }
