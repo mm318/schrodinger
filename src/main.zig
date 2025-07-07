@@ -238,7 +238,7 @@ const Domain = struct {
     // Enable/disable forcing
     forcing: bool,
 
-    fn init() Domain {
+    fn init(n: s.sunindextype) Domain {
         var domain: Domain = undefined;
 
         // Diffusion coefficient
@@ -253,8 +253,8 @@ const Domain = struct {
         domain.yu = ONE;
 
         // Number of nodes in the x and y directions
-        domain.nx = 32;
-        domain.ny = 32;
+        domain.nx = n;
+        domain.ny = n;
         domain.nodes = domain.nx * domain.ny;
 
         // Mesh spacing in the x and y directions
@@ -951,7 +951,7 @@ pub fn main() !void {
         if (deinit_status == .leak) std.log.warn("memory leaked!", .{});
     }
 
-    var domain = Domain.init();
+    var domain = Domain.init(32);
     domain.printData();
 
     const solver = try Solver.init(allocator, &domain, Solver.Options.default());
@@ -1012,8 +1012,8 @@ test "index2coord" {
     var prng = std.Random.DefaultPrng.init(seed);
     const rand = prng.random();
 
-    const N = rand.intRangeAtMost(usize, 101, 201);
-    const p = Domain.init(1.0, N);
+    const N = rand.intRangeAtMost(s.sunindextype, 101, 201);
+    const p = Domain.init(N);
 
     for (0..100) |_| {
         const i = rand.uintLessThan(usize, p.size());
