@@ -240,18 +240,18 @@ const Domain = struct {
     // Final time
     tf: s.sunrealtype,
 
-    fn init(n: s.sunindextype) Domain {
+    fn init(l: s.sunrealtype, n: s.sunindextype) Domain {
         var domain: Domain = undefined;
 
         // Diffusion coefficient
-        domain.kx = ONE;
-        domain.ky = ONE;
-        domain.kz = ONE;
+        domain.kx = 0.5;
+        domain.ky = 0.3;
+        domain.kz = 0.1;
 
         // Upper bounds in x and y directions
-        domain.xu = ONE;
-        domain.yu = ONE;
-        domain.zu = ONE;
+        domain.xu = l;
+        domain.yu = l;
+        domain.zu = l;
 
         // Number of nodes in the x and y directions
         domain.nx = n;
@@ -337,7 +337,11 @@ const Domain = struct {
             for (0..@intCast(p.ny)) |iy| {
                 for (0..@intCast(p.nx)) |ix| {
                     if (ix == 0 or ix == p.nx - 1 or iy == 0 or iy == p.ny - 1 or iz == 0 or iz == p.nz - 1) {
-                        Udot[@intCast(i)] = 0.0; // boundary condition: adiabatic
+                        if (ix == 0) {
+                            Udot[@intCast(i)] = TWO; // heat source
+                        } else {
+                            Udot[@intCast(i)] = 0.0; // boundary condition: adiabatic
+                        }
                     } else {
                         Udot[@intCast(i)] =
                             c1x * U[@intCast(x_prev)] + c2x * U[@intCast(i)] + c1x * U[@intCast(x_next)] +
@@ -354,13 +358,6 @@ const Domain = struct {
                 }
             }
         }
-
-        const isrc = p.coord2index(.{
-            .ix = @intCast(@divTrunc(p.nx, 2)),
-            .iy = @intCast(@divTrunc(p.ny, 2)),
-            .iz = @intCast(@divTrunc(p.nz, 2)),
-        }); // heat source location
-        Udot[isrc] += TWO; // source term
 
         // Update timer
         solver.rhstime += @as(f64, @floatFromInt(timer.read())) / std.time.ns_per_s;
@@ -817,7 +814,7 @@ fn WriteOutput(solver: *const Solver, t: s.sunrealtype) void {
 
         // Compute rms norm of the state
         const urms: s.sunrealtype = std.math.sqrt(
-            s.N_VDotProd(solver.u, solver.u) / @as(f64, @floatFromInt(udata.nx)) / @as(f64, @floatFromInt(udata.ny)),
+            s.N_VDotProd(solver.u, solver.u) / @as(f64, @floatFromInt(udata.size())),
         );
 
         // Output current status
@@ -829,6 +826,7 @@ fn CloseOutput(solver: *const Solver) void {
     // Footer for status output
     if (solver.options.output > 0) {
         std.log.info(" ----------------------------------------------", .{});
+        std.log.info("", .{});
     }
 }
 
@@ -914,7 +912,7 @@ pub fn main() !void {
         if (deinit_status == .leak) std.log.warn("memory leaked!", .{});
     }
 
-    var domain = Domain.init(32);
+    var domain = Domain.init(1.0, 32);
     domain.printData();
 
     const solver = try Solver.init(allocator, &domain, Solver.Options.default());
@@ -923,6 +921,7 @@ pub fn main() !void {
 
     var plotter = try Plotter.init(allocator, solver.domain);
     defer plotter.deinit();
+    try plotter.startSeries();
     var strbuf: [256]u8 = undefined;
 
     var t: s.sunrealtype = 0;
@@ -932,7 +931,6 @@ pub fn main() !void {
     // Initial output
     OpenOutput(solver);
     WriteOutput(solver, t);
-    try plotter.startSeries();
     var filename = try std.fmt.bufPrint(&strbuf, "heat3d_t{d:0>10.6}.vtu", .{t});
     try plotter.plot(allocator, solver.u, filename);
 
@@ -976,7 +974,7 @@ test "index2coord" {
     const rand = prng.random();
 
     const N = rand.intRangeAtMost(s.sunindextype, 101, 201);
-    const p = Domain.init(N);
+    const p = Domain.init(1.0, N);
 
     for (0..100) |_| {
         const i = rand.uintLessThan(usize, p.size());
