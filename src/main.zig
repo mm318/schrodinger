@@ -864,8 +864,21 @@ fn WriteOutput(solver: *const Solver, t: s.sunrealtype) void {
     }
 }
 
+fn CloseOutput(solver: *const Solver) void {
+    // Footer for status output
+    if (solver.options.output > 0) {
+        if (solver.domain.forcing) {
+            std.log.info(" -----------------------------------------------------------------------", .{});
+        } else {
+            std.log.info(" ----------------------------------------------", .{});
+        }
+    }
+}
+
 const Plotter = struct {
     mesh_builder: VtuWriter.UnstructuredMeshBuilder,
+    num_plotted: usize = 0,
+    series_file: ?std.fs.File = null,
 
     fn init(allocator: std.mem.Allocator, domain: *const Domain) !Plotter {
         var self = Plotter{ .mesh_builder = VtuWriter.UnstructuredMeshBuilder.init(allocator) };
@@ -896,7 +909,13 @@ const Plotter = struct {
         return self;
     }
 
-    fn plot(self: *const Plotter, allocator: std.mem.Allocator, u: s.N_Vector, filename: []const u8) !void {
+    fn startSeries(self: *Plotter) !void {
+        const cwd = std.fs.cwd();
+        self.series_file = try cwd.createFile("heat2d.vtu.series", .{});
+        try self.series_file.?.writer().print("{{\n  \"file-series-version\" : \"1.0\",\n  \"files\" : [\n", .{});
+    }
+
+    fn plot(self: *Plotter, allocator: std.mem.Allocator, u: s.N_Vector, filename: []const u8) !void {
         const mesh = self.mesh_builder.getUnstructuredMesh();
 
         const u_array = checkedMemOp(s.N_VGetArrayPointer, .{u}) catch unreachable;
@@ -909,10 +928,18 @@ const Plotter = struct {
         };
 
         try VtuWriter.writeVtu(allocator, filename, mesh, &data_sets, .rawbinarycompressed);
+        if (self.series_file) |file| {
+            try file.writer().print("    {{ \"name\" : \"{s}\", \"time\" : {} }},\n", .{ filename, self.num_plotted });
+        }
+        self.num_plotted += 1;
     }
 
     fn deinit(self: *Plotter) void {
         self.mesh_builder.deinit();
+        if (self.series_file) |file| {
+            file.writer().print("  ]\n}}\n", .{}) catch unreachable;
+            file.close();
+        }
     }
 };
 
@@ -942,6 +969,7 @@ pub fn main() !void {
     // Initial output
     OpenOutput(solver);
     WriteOutput(solver, t);
+    try plotter.startSeries();
     var filename = try std.fmt.bufPrint(&strbuf, "heat2d_t{d:0>10.6}.vtu", .{t});
     try plotter.plot(allocator, solver.u, filename);
 
@@ -961,6 +989,8 @@ pub fn main() !void {
         tout += dTout;
         tout = if (tout > solver.domain.tf) solver.domain.tf else tout;
     }
+
+    CloseOutput(solver);
 
     // Print some final statistics
     solver.printStats();
