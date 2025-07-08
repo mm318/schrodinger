@@ -331,7 +331,11 @@ export fn f(
         for (0..@intCast(p.Ny)) |iy| {
             for (0..@intCast(p.Nx)) |ix| {
                 if (ix == 0 or ix == p.Nx - 1 or iy == 0 or iy == p.Ny - 1 or iz == 0 or iz == p.Nz - 1) {
-                    Udot[@intCast(i)] = 0.0; // boundary condition: adiabatic
+                    if (ix == 0) {
+                        Udot[@intCast(i)] = 2.0; // heat source
+                    } else {
+                        Udot[@intCast(i)] = 0.0; // boundary condition: adiabatic
+                    }
                 } else {
                     Udot[@intCast(i)] =
                         c1x * U[@intCast(x_prev)] + c2x * U[@intCast(i)] + c1x * U[@intCast(x_next)] +
@@ -348,13 +352,6 @@ export fn f(
             }
         }
     }
-
-    const isrc = p.coord2index(.{
-        .ix = @intCast(@divTrunc(p.Nx, 2)),
-        .iy = @intCast(@divTrunc(p.Ny, 2)),
-        .iz = @intCast(@divTrunc(p.Nz, 2)),
-    }); // heat source location
-    Udot[isrc] += p.h; // source term
 
     return 0; // return with success
 }
@@ -451,6 +448,8 @@ const Solver = struct {
 
 const Plotter = struct {
     mesh_builder: VtuWriter.UnstructuredMeshBuilder,
+    num_plotted: usize = 0,
+    series_file: ?std.fs.File = null,
 
     fn init(allocator: std.mem.Allocator, domain: *const Domain) !Plotter {
         var self = Plotter{ .mesh_builder = VtuWriter.UnstructuredMeshBuilder.init(allocator) };
@@ -487,7 +486,13 @@ const Plotter = struct {
         return self;
     }
 
-    fn plot(self: *const Plotter, allocator: std.mem.Allocator, point_data: []const f64, filename: []const u8) !void {
+    fn startSeries(self: *Plotter) !void {
+        const cwd = std.fs.cwd();
+        self.series_file = try cwd.createFile("heat3d.vtu.series", .{});
+        try self.series_file.?.writer().print("{{\n  \"file-series-version\" : \"1.0\",\n  \"files\" : [\n", .{});
+    }
+
+    fn plot(self: *Plotter, allocator: std.mem.Allocator, point_data: []const f64, filename: []const u8) !void {
         const mesh = self.mesh_builder.getUnstructuredMesh();
 
         const data_sets = [_]VtuWriter.DataSet{
@@ -495,10 +500,18 @@ const Plotter = struct {
         };
 
         try VtuWriter.writeVtu(allocator, filename, mesh, &data_sets, .rawbinarycompressed);
+        if (self.series_file) |file| {
+            try file.writer().print("    {{ \"name\" : \"{s}\", \"time\" : {} }},\n", .{ filename, self.num_plotted });
+        }
+        self.num_plotted += 1;
     }
 
     fn deinit(self: *Plotter) void {
         self.mesh_builder.deinit();
+        if (self.series_file) |file| {
+            file.writer().print("  ]\n}}\n", .{}) catch unreachable;
+            file.close();
+        }
     }
 };
 
@@ -510,11 +523,11 @@ pub fn main() !void {
         if (deinit_status == .leak) std.log.warn("memory leaked!", .{});
     }
 
-    var domain = Domain.init(1.0, 101);
+    var domain = Domain.init(1.0, 32);
 
     const T0: s.sunrealtype = 0.0; // initial time
     const Tf: s.sunrealtype = 1.0; // final time
-    const Nt: usize = 10; // total number of output times
+    const Nt: usize = 20; // total number of output times
 
     // Initial problem output
     std.log.info("3D Heat PDE test problem:", .{});
@@ -533,18 +546,22 @@ pub fn main() !void {
 
     var plotter = try Plotter.init(allocator, &domain);
     defer plotter.deinit();
+    try plotter.startSeries();
+    var strbuf: [256]u8 = undefined;
 
     var t = T0;
     const dTout = (Tf - T0) / Nt;
     var tout = T0 + dTout;
 
+    // Initial output
     std.log.info("", .{});
     std.log.info("        t      ||u||_rms", .{});
     std.log.info("   -------------------------", .{});
     std.log.info("  {d:10.6}  {e:10.4}", .{ t, @sqrt(s.N_VDotProd(solver.y, solver.y) / @as(f64, @floatFromInt(domain.size()))) });
+    var filename = try std.fmt.bufPrint(&strbuf, "heat3d_t{d:0>10.6}.vtu", .{t});
+    try plotter.plot(allocator, solver.getSolution(), filename);
 
     var timer = try std.time.Timer.start();
-    var strbuf: [256]u8 = undefined;
     for (0..Nt) |_| {
         checkedCall(s.ARKodeEvolve, .{ solver.arkode_mem, tout, solver.y, &t, s.ARK_NORMAL }) catch {
             std.log.err("Solver failure, stopping integration", .{});
@@ -557,14 +574,8 @@ pub fn main() !void {
         tout = if (tout > Tf) Tf else tout;
 
         // plot results of time t
-        const filename = std.fmt.bufPrint(&strbuf, "heat3d_t{d:0>10.6}.vtu", .{t}) catch {
-            std.log.err("Faled to produce filename for plot", .{});
-            continue;
-        };
-        plotter.plot(allocator, solver.getSolution(), filename) catch {
-            std.log.err("Failed to plot", .{});
-            continue;
-        };
+        filename = try std.fmt.bufPrint(&strbuf, "heat3d_t{d:0>10.6}.vtu", .{t});
+        try plotter.plot(allocator, solver.getSolution(), filename);
     }
     const elapsed: f64 = @floatFromInt(timer.read());
     std.log.info("", .{});
