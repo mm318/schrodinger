@@ -311,7 +311,7 @@ const Domain = struct {
         var timer = std.time.Timer.start() catch return -1;
 
         // Access problem data
-        const solver: *Solver = @alignCast(@ptrCast(user_data));
+        const solver: *Solver = @ptrCast(@alignCast(user_data));
         const p: *const Domain = solver.domain;
 
         const U = checkedMemOp(s.N_VGetArrayPointer, .{u}) catch return 1;
@@ -498,7 +498,7 @@ const Solver = struct {
         var timer = std.time.Timer.start() catch return -1;
 
         // Access problem data
-        const solver: *Solver = @alignCast(@ptrCast(user_data));
+        const solver: *Solver = @ptrCast(@alignCast(user_data));
         const udata: *const Domain = solver.domain;
 
         // Access data array
@@ -538,7 +538,7 @@ const Solver = struct {
         var timer = std.time.Timer.start() catch return -1;
 
         // Access user_data structure
-        const solver: *Solver = @alignCast(@ptrCast(user_data));
+        const solver: *Solver = @ptrCast(@alignCast(user_data));
 
         // Perform Jacobi iteration
         s.N_VProd(solver.d, r, z);
@@ -834,6 +834,7 @@ const Plotter = struct {
     mesh_builder: VtuWriter.UnstructuredMeshBuilder,
     num_plotted: usize = 0,
     series_file: ?std.fs.File = null,
+    file_writer: ?std.fs.File.Writer = null,
 
     fn init(allocator: std.mem.Allocator, domain: *const Domain) !Plotter {
         var self = Plotter{ .mesh_builder = VtuWriter.UnstructuredMeshBuilder.init(allocator) };
@@ -873,7 +874,9 @@ const Plotter = struct {
     fn startSeries(self: *Plotter) !void {
         const cwd = std.fs.cwd();
         self.series_file = try cwd.createFile("heat3d.vtu.series", .{});
-        try self.series_file.?.writer().print("{{\n  \"file-series-version\" : \"1.0\",\n  \"files\" : [\n", .{});
+        self.file_writer = self.series_file.?.writer(&.{});
+        const file = &self.file_writer.?.interface;
+        try file.print("{{\n  \"file-series-version\" : \"1.0\",\n  \"files\" : [\n", .{});
     }
 
     fn plot(self: *Plotter, allocator: std.mem.Allocator, u: s.N_Vector, filename: []const u8) !void {
@@ -889,17 +892,20 @@ const Plotter = struct {
         };
 
         try VtuWriter.writeVtu(allocator, filename, mesh, &data_sets, .rawbinarycompressed);
-        if (self.series_file) |file| {
-            try file.writer().print("    {{ \"name\" : \"{s}\", \"time\" : {} }},\n", .{ filename, self.num_plotted });
+        if (self.series_file) |_| {
+            const file = &self.file_writer.?.interface;
+            try file.print("    {{ \"name\" : \"{s}\", \"time\" : {} }},\n", .{ filename, self.num_plotted });
         }
         self.num_plotted += 1;
     }
 
     fn deinit(self: *Plotter) void {
         self.mesh_builder.deinit();
-        if (self.series_file) |file| {
-            file.writer().print("  ]\n}}\n", .{}) catch unreachable;
-            file.close();
+
+        if (self.series_file) |series_file| {
+            const file = &self.file_writer.?.interface;
+            file.print("  ]\n}}\n", .{}) catch unreachable;
+            series_file.close();
         }
     }
 };

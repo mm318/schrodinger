@@ -3,16 +3,16 @@
     .version = "0.0.0",
     .fingerprint = 0x7500392784adb00f, // Changing this has security and trust implications.
 
-    .minimum_zig_version = "0.14.0",
+    .minimum_zig_version = "0.15.1",
 
     .dependencies = .{
         .arkode = .{
-            .url = "https://github.com/mm318/arkode-zig/archive/26a51b3243c6f9eaa45d51db2f3ac778f8ca8007.zip",
-            .hash = "arkode-6.2.1-5YSPKHhZlgB-Q06OhXQLj_pN0D123_Xtjv0JDEb3xR1W",
+            .url = "https://github.com/mm318/arkode-zig/archive/984e056fc54f0efa1ed52703dbab6cb2a649b706.zip",
+            .hash = "arkode-6.2.1-5YSPKJxalgAHfkKnnH-FNOteEugOnE9PE_BNk_oTx8GM",
         },
         .vtu_writer = .{
-            .url = "https://github.com/mm318/vtu-writer/archive/51362603052ba2e3f0a65d35c903b82003fb2494.zip",
-            .hash = "vtu_writer-0.0.1-jCl2qc5vAAC5Qu2CnXmyrnPlmkjHqutUUAMQowukq9GF",
+            .url = "https://github.com/mm318/vtu-writer/archive/12ea9642a4bbde24775f2845ba0e934d008268e0.zip",
+            .hash = "vtu_writer-0.0.1-jCl2qVx9AAAjKzNuCJJ8TT0g1Lf6O5dqHn4wWME-VoRr",
         },
     },
 
