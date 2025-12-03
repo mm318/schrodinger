@@ -4,7 +4,7 @@ const builtin = @import("builtin");
 const VtuWriter = @import("vtu_writer");
 
 const s = @cImport({
-    @cInclude("nvector/nvector_serial.h"); // access to the serial N_Vector
+    @cInclude("nvector/nvector_pthreads.h"); // access to the pthreads N_Vector
     @cInclude("sunlinsol/sunlinsol_pcg.h"); // access to PCG SUNLinearSolver
     @cInclude("sunlinsol/sunlinsol_spgmr.h"); // access to SPGMR SUNLinearSolver
     @cInclude("arkode/arkode_arkstep.h"); // access to ARKStep
@@ -388,6 +388,8 @@ const Domain = struct {
 
 const Solver = struct {
     const Options = struct {
+        num_threads: usize,
+
         // Integrator settings
         rtol: s.sunrealtype, // relative tolerance
         atol: s.sunrealtype, // absolute tolerance
@@ -416,6 +418,8 @@ const Solver = struct {
 
         fn default() Options {
             var opts: Options = undefined;
+
+            opts.num_threads = 8;
 
             // Integrator settings
             opts.rtol = s.SUN_RCONST(1e-5); // relative tolerance
@@ -573,7 +577,7 @@ const Solver = struct {
         // ----------------------
 
         // Create vector for solution
-        solver.u = try checkedMemOp(s.N_VNew_Serial, .{ domain.nodes, solver.ctx });
+        solver.u = try checkedMemOp(s.N_VNew_Pthreads, .{ domain.nodes, @as(i32, @intCast(opts.num_threads)), solver.ctx });
 
         // Set initial condition: Initialize u to zero (handles boundary conditions)
         s.N_VConst(ZERO, solver.u);
