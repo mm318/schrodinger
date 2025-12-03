@@ -27,6 +27,7 @@ pub fn build(b: *std.Build) void {
         .name = "heat3d",
         .root_module = exe_mod,
     });
+    exe.linkSystemLibrary("vulkan");
 
     // This declares intent for the executable to be installed into the
     // standard location when the user invokes the "install" step (the default

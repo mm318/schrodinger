@@ -7,8 +7,8 @@
 
     .dependencies = .{
         .arkode = .{
-            .url = "https://github.com/mm318/arkode-zig/archive/5c30bfcd39916f0e9ddc3ab8e0b6b495c30f56da.zip",
-            .hash = "arkode-6.5.0-5YSPKFjSowALfElkmWeC5ON8jBi0UB10lGVtGR2jJ_PA",
+            .url = "https://github.com/mm318/arkode-zig/archive/ed112bb532831e57d834630d1ed63623a44ac978.zip",
+            .hash = "arkode-6.5.0-5YSPKLxVowDuviwwDp5fOGgG1vWT5kZfzeGC61_9PCp9",
         },
         .vtu_writer = .{
             .url = "https://github.com/mm318/vtu-writer/archive/12ea9642a4bbde24775f2845ba0e934d008268e0.zip",
