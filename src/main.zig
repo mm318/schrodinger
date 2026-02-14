@@ -314,9 +314,9 @@ const Domain = struct {
         const solver: *Solver = @ptrCast(@alignCast(user_data));
         const p: *const Domain = solver.domain;
 
+        s.N_VCopyFromDevice_Vulkan(u);
         const U = checkedMemOp(s.N_VGetArrayPointer, .{u}) catch return 1;
         const Udot = checkedMemOp(s.N_VGetArrayPointer, .{u_dot}) catch return 1;
-        s.N_VConst(0.0, u_dot); // Initialize ydot to zero
 
         // iterate over domain, computing all equations
         const c1x: s.sunrealtype = p.kx / p.dx / p.dx;
@@ -358,6 +358,8 @@ const Domain = struct {
                 }
             }
         }
+
+        s.N_VMarkDeviceNeedsUpdate_Vulkan(u_dot);
 
         // Update timer
         solver.rhstime += @as(f64, @floatFromInt(timer.read())) / std.time.ns_per_s;
@@ -504,9 +506,6 @@ const Solver = struct {
         // Access problem data
         const solver: *Solver = @ptrCast(@alignCast(user_data));
         const udata: *const Domain = solver.domain;
-
-        // Access data array
-        _ = checkedMemOp(s.N_VGetArrayPointer, .{solver.d}) catch return -1;
 
         // Constants for computing diffusion
         const cx: s.sunrealtype = udata.kx / (udata.dx * udata.dx);
@@ -886,6 +885,7 @@ const Plotter = struct {
     fn plot(self: *Plotter, allocator: std.mem.Allocator, u: s.N_Vector, filename: []const u8) !void {
         const mesh = self.mesh_builder.getUnstructuredMesh();
 
+        s.N_VCopyFromDevice_Vulkan(u);
         const u_array = checkedMemOp(s.N_VGetArrayPointer, .{u}) catch unreachable;
         const u_array_size = s.N_VGetLocalLength(u);
         var point_data: []const f64 = undefined;
