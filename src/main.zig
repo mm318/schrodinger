@@ -314,9 +314,8 @@ const Domain = struct {
         const solver: *Solver = @ptrCast(@alignCast(user_data));
         const p: *const Domain = solver.domain;
 
-        s.N_VCopyFromDevice_Vulkan(u);
-        const U = checkedMemOp(s.N_VGetArrayPointer, .{u}) catch return 1;
-        const Udot = checkedMemOp(s.N_VGetArrayPointer, .{u_dot}) catch return 1;
+        const U = checkedMemOp(s.N_VGetDeviceData_Vulkan, .{u}) catch return 1;
+        const Udot = checkedMemOp(s.N_VGetDeviceData_Vulkan, .{u_dot}) catch return 1;
 
         // iterate over domain, computing all equations
         const c1x: s.sunrealtype = p.kx / p.dx / p.dx;
@@ -338,15 +337,16 @@ const Domain = struct {
                 for (0..@intCast(p.nx)) |ix| {
                     if (ix == 0 or ix == p.nx - 1 or iy == 0 or iy == p.ny - 1 or iz == 0 or iz == p.nz - 1) {
                         if (ix == 0) {
-                            Udot[@intCast(i)] = TWO; // heat source
+                            Udot[@intCast(i)] = @floatCast(TWO); // heat source
                         } else {
                             Udot[@intCast(i)] = 0.0; // boundary condition: adiabatic
                         }
                     } else {
-                        Udot[@intCast(i)] =
-                            c1x * U[@intCast(x_prev)] + c2x * U[@intCast(i)] + c1x * U[@intCast(x_next)] +
-                            c1y * U[@intCast(y_prev)] + c2y * U[@intCast(i)] + c1y * U[@intCast(y_next)] +
-                            c1z * U[@intCast(z_prev)] + c2z * U[@intCast(i)] + c1z * U[@intCast(z_next)];
+                        const ui: s.sunrealtype = U[@intCast(i)];
+                        Udot[@intCast(i)] = @floatCast(
+                            c1x * @as(s.sunrealtype, U[@intCast(x_prev)]) + c2x * ui + c1x * @as(s.sunrealtype, U[@intCast(x_next)]) +
+                            c1y * @as(s.sunrealtype, U[@intCast(y_prev)]) + c2y * ui + c1y * @as(s.sunrealtype, U[@intCast(y_next)]) +
+                            c1z * @as(s.sunrealtype, U[@intCast(z_prev)]) + c2z * ui + c1z * @as(s.sunrealtype, U[@intCast(z_next)]));
                     }
                     i += 1;
                     x_prev += 1;
@@ -359,7 +359,7 @@ const Domain = struct {
             }
         }
 
-        s.N_VMarkDeviceNeedsUpdate_Vulkan(u_dot);
+        s.N_VMarkHostNeedsUpdate_Vulkan(u_dot);
 
         // Update timer
         solver.rhstime += @as(f64, @floatFromInt(timer.read())) / std.time.ns_per_s;
