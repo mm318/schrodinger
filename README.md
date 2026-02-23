@@ -1,58 +1,55 @@
 # Schrodinger
 
-This project simulates a 2D time-dependent Schrödinger equation on a unit square domain using:
+2D time-dependent Schrödinger simulation on a unit square with a Gaussian wave packet traveling toward a double-slit barrier.
 
-- SUNDIALS ARKODE for time integration
-- A custom complex `N_Vector` implementation
-- `vtu_writer` for per-timestep VTU output
-
-The current program initializes a Gaussian wave packet near the left-middle of the domain and evolves it toward the right.
-
-It also writes visualization files for each timestep:
-
-- `schrodinger2d_t*.vtu`
-- `schrodinger2d.vtu.series`
-
-These can be loaded in ParaView as a time series.
+![Double-slit simulation demo](doc/demo.webp)
 
 
-## Requirements
+### Program Details
 
-- Zig 0.15.1
+- Evolves a complex wave function `psi(x, y, t)` on a `100 x 100` grid.
+- Uses an initial Gaussian packet near the left-middle of the domain moving to the right.
+- Applies a high-potential double-slit wall.
+- Integrates in time with SUNDIALS ARKODE (implicit method).
+- Writes one VTU file per timestep plus a VTU series file for ParaView.
 
 
 ## Build
 
-Build the executable:
+### Requirements
+
+- Zig 0.15.1
+
+### Instructions
 
 ```bash
 zig build -Doptimize=ReleaseSafe
 ```
 
-The binary will be outputted at `zig-out/bin/schrodinger`.
+Binary output:
+
+- `zig-out/bin/schrodinger`
 
 
 ## Run
-
-Run the simulation:
 
 ```bash
 zig build -Doptimize=ReleaseSafe run
 ```
 
-This will:
+Run output includes:
 
-- print solver diagnostics to stdout
-- generate `.vtu` files for each timestep
-- generate `schrodinger2d.vtu.series`
+- console diagnostics (norm, packet center, widths, peak amplitude)
+- `schrodinger2d_t*.vtu`
+- `schrodinger2d.vtu.series`
+
+Open `schrodinger2d.vtu.series` in ParaView to view the time sequence.
 
 
 ## Run Tests
-
-Run unit tests:
 
 ```bash
 zig build -Doptimize=ReleaseSafe test
 ```
 
-Current test coverage is focused on the custom complex `N_Vector` implementation in `test/test_nvector_complex.zig`.
+Tests currently focus on the custom complex `N_Vector` implementation in `test/test_nvector_complex.zig`.

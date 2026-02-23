@@ -34,6 +34,11 @@ const packet_x0: f64 = 0.2;
 const packet_y0: f64 = 0.5;
 const packet_kx: f64 = 157.0;
 const packet_ky: f64 = 0.0;
+const wall_x_center: f64 = 0.5;
+const wall_thickness: f64 = 0.02;
+const slit_width: f64 = 0.08;
+const slit_gap_edge_to_edge: f64 = 0.02;
+const wall_potential: f64 = 1.0e5;
 const T0: f64 = 0.0;
 const Tf: f64 = 0.006;
 const reltol: f64 = 1.0e-6;
@@ -49,6 +54,12 @@ const two = Complex.init(2.0, 0.0);
 const i_half = Complex.init(0.0, 0.5);
 const inv_dx2_c = Complex.init(inv_dx2, 0.0);
 const inv_dy2_c = Complex.init(inv_dy2, 0.0);
+const wall_x_min = wall_x_center - 0.5 * wall_thickness;
+const wall_x_max = wall_x_center + 0.5 * wall_thickness;
+const lower_slit_y_max = 0.5 - 0.5 * slit_gap_edge_to_edge;
+const lower_slit_y_min = lower_slit_y_max - slit_width;
+const upper_slit_y_min = 0.5 + 0.5 * slit_gap_edge_to_edge;
+const upper_slit_y_max = upper_slit_y_min + slit_width;
 
 const Diagnostics = struct {
     norm: f64,
@@ -63,12 +74,25 @@ inline fn idx(ix: usize, iy: usize) usize {
     return iy * Nx + ix;
 }
 
+inline fn isInSlit(ycoord: f64) bool {
+    const in_lower = (ycoord >= lower_slit_y_min) and (ycoord <= lower_slit_y_max);
+    const in_upper = (ycoord >= upper_slit_y_min) and (ycoord <= upper_slit_y_max);
+    return in_lower or in_upper;
+}
+
+fn potentialAt(xcoord: f64, ycoord: f64) f64 {
+    if ((xcoord < wall_x_min) or (xcoord > wall_x_max)) return 0.0;
+    if (isInSlit(ycoord)) return 0.0;
+    return wall_potential;
+}
+
 const Plotter = struct {
     allocator: std.mem.Allocator,
     mesh_builder: VtuWriter.UnstructuredMeshBuilder,
     real_data: []f64,
     imag_data: []f64,
     prob_data: []f64,
+    potential_data: []f64,
     series_file: ?std.fs.File = null,
     num_plotted: usize = 0,
 
@@ -79,6 +103,7 @@ const Plotter = struct {
             .real_data = try allocator.alloc(f64, neq),
             .imag_data = try allocator.alloc(f64, neq),
             .prob_data = try allocator.alloc(f64, neq),
+            .potential_data = try allocator.alloc(f64, neq),
         };
 
         try self.mesh_builder.reservePoints(neq);
@@ -89,6 +114,7 @@ const Plotter = struct {
             for (0..Nx) |ix| {
                 const xcoord = (@as(f64, @floatFromInt(ix)) + 0.5) * dx;
                 _ = try self.mesh_builder.addPoint(.{ xcoord, ycoord, 0.0 });
+                self.potential_data[idx(ix, iy)] = potentialAt(xcoord, ycoord);
             }
         }
 
@@ -124,6 +150,7 @@ const Plotter = struct {
             .{ "psi_real", VtuWriter.DataSetType.PointData, 1, self.real_data },
             .{ "psi_imag", VtuWriter.DataSetType.PointData, 1, self.imag_data },
             .{ "probability_density", VtuWriter.DataSetType.PointData, 1, self.prob_data },
+            .{ "potential", VtuWriter.DataSetType.PointData, 1, self.potential_data },
         };
 
         try VtuWriter.writeVtu(self.allocator, filename, mesh, &data_sets, .rawbinarycompressed);
@@ -147,6 +174,7 @@ const Plotter = struct {
         self.allocator.free(self.real_data);
         self.allocator.free(self.imag_data);
         self.allocator.free(self.prob_data);
+        self.allocator.free(self.potential_data);
 
         if (self.series_file) |file| {
             file.writeAll("\n  ]\n}\n") catch {};
@@ -251,9 +279,11 @@ export fn Rhs(tn: c.sunrealtype, sunvec_y: c.N_Vector, sunvec_f: c.N_Vector, use
     const f = nvector_complex.N_VGetCVec(asComplexNVector(sunvec_f));
 
     for (0..Ny) |iy| {
+        const ycoord = (@as(f64, @floatFromInt(iy)) + 0.5) * dy;
         const iy_d = if (iy == 0) Ny - 1 else iy - 1;
         const iy_u = if (iy + 1 == Ny) 0 else iy + 1;
         for (0..Nx) |ix| {
+            const xcoord = (@as(f64, @floatFromInt(ix)) + 0.5) * dx;
             const ix_l = if (ix == 0) Nx - 1 else ix - 1;
             const ix_r = if (ix + 1 == Nx) 0 else ix + 1;
 
@@ -269,7 +299,9 @@ export fn Rhs(tn: c.sunrealtype, sunvec_y: c.N_Vector, sunvec_f: c.N_Vector, use
                 .sub(center.mul(two))
                 .mul(inv_dy2_c);
 
-            f.data[center_id] = lap_x.add(lap_y).mul(i_half);
+            const v = potentialAt(xcoord, ycoord);
+            const potential_term = center.mul(Complex.init(0.0, -v));
+            f.data[center_id] = lap_x.add(lap_y).mul(i_half).add(potential_term);
         }
     }
     return 0;
@@ -306,6 +338,13 @@ pub fn main() !void {
     std.debug.print("    grid = {} x {}, timesteps = {}\n", .{ Nx, Ny, Nt });
     std.debug.print("    packet radius = {d:.3}, center = ({d:.3}, {d:.3})\n", .{ packet_radius, packet_x0, packet_y0 });
     std.debug.print("    packet wavevector = ({d:.3}, {d:.3})\n", .{ packet_kx, packet_ky });
+    std.debug.print("    double-slit wall: x = {d:.3} +/- {d:.3}, V0 = {e}\n", .{ wall_x_center, 0.5 * wall_thickness, wall_potential });
+    std.debug.print("    slit y-ranges: [{d:.3}, {d:.3}] and [{d:.3}, {d:.3}]\n", .{
+        lower_slit_y_min,
+        lower_slit_y_max,
+        upper_slit_y_min,
+        upper_slit_y_max,
+    });
     std.debug.print("    ARKODE method = implicit midpoint (DIRK), reltol = {e}, abstol = {e}\n", .{ reltol, abstol });
     std.debug.print("    internal fixed substeps per output step = {}\n", .{internal_substeps});
 
