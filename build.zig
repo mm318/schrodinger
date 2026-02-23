@@ -26,7 +26,7 @@ pub fn build(b: *std.Build) void {
 
     // We will create a module for our main entrypoint
     const exe_mod = b.createModule(.{
-        .root_source_file = b.path("src/ark_analytic_complex.zig"),
+        .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,

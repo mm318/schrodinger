@@ -24,18 +24,18 @@ inline fn asComplexSunContext(ctx: c.SUNContext) nv.SUNContext {
     return @ptrCast(ctx);
 }
 
-const Nx: usize = 64;
-const Ny: usize = 64;
+const Nx: usize = 100;
+const Ny: usize = 100;
 const neq: usize = Nx * Ny;
-const Nt: usize = 50;
+const Nt: usize = 100;
 const domain_length: f64 = 1.0;
 const packet_radius: f64 = 0.1;
 const packet_x0: f64 = 0.2;
 const packet_y0: f64 = 0.5;
-const packet_kx: f64 = 40.0;
+const packet_kx: f64 = 157.0;
 const packet_ky: f64 = 0.0;
 const T0: f64 = 0.0;
-const Tf: f64 = 0.0025;
+const Tf: f64 = 0.006;
 const reltol: f64 = 1.0e-6;
 const abstol: f64 = 1.0e-9;
 
