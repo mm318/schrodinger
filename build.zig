@@ -8,6 +8,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    const arkode_lib = arkode_dep.artifact("arkode");
     const vtu_dep = b.dependency("vtu_writer", .{
         .target = target,
         .optimize = optimize,
@@ -17,17 +18,21 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/lib/nvector_complex.zig"),
         .target = target,
         .optimize = optimize,
+        .link_libc = true,
     });
+    // nvector_complex performs @cImport and needs arkode's installed header tree.
+    complex_vector_mod.linkLibrary(arkode_lib);
 
     // We will create a module for our main entrypoint
     const exe_mod = b.createModule(.{
         .root_source_file = b.path("src/ark_analytic_complex.zig"),
         .target = target,
         .optimize = optimize,
+        .link_libc = true,
     });
     exe_mod.addImport("vtu_writer", vtu_dep.module("vtu_writer"));
     exe_mod.addImport("nvector_complex", complex_vector_mod);
-    exe_mod.linkLibrary(arkode_dep.artifact("arkode"));
+    exe_mod.linkLibrary(arkode_lib);
 
     // This creates another `std.Build.Step.Compile` that builds an executable
     const exe = b.addExecutable(.{
@@ -69,7 +74,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    exe_mod.addImport("nvector_complex", complex_vector_mod);
+    test_mod.addImport("nvector_complex", complex_vector_mod);
 
     const exe_unit_tests = b.addTest(.{
         .root_module = test_mod,

@@ -1,14 +1,7 @@
 const std = @import("std");
 
-const c = @cImport({
-    @cInclude("sundials/sundials_nvector.h");
-    @cInclude("sundials/sundials_types.h");
-    @cInclude("sundials/sundials_context.h");
-    @cInclude("arkode/arkode.h");
-    @cInclude("arkode/arkode_arkstep.h");
-});
-
 const nvector_complex = @import("nvector_complex");
+const c = nvector_complex.c;
 const Complex = nvector_complex.Complex;
 
 const neq: usize = 1;
@@ -75,13 +68,13 @@ pub fn main() !void {
 
     y.data[0] = Sol(T0);
 
-    const arkode_mem = c.ARKStepCreate(Rhs, null, T0, sunvec_y, sunctx) orelse {
+    var arkode_mem: ?*anyopaque = c.ARKStepCreate(Rhs, null, T0, sunvec_y, sunctx) orelse {
         std.debug.print("ERROR: arkode_mem = NULL\n", .{});
         return;
     };
     defer c.ARKodeFree(&arkode_mem);
 
-    _ = c.ARKodeSStolerances(arkode_mem, reltol, abstol);
+    _ = c.ARKodeSStolerances(arkode_mem.?, reltol, abstol);
 
     var tcur: f64 = T0;
     const dTout = (Tf - T0) / @as(f64, @floatFromInt(Nt));
@@ -95,7 +88,7 @@ pub fn main() !void {
     std.debug.print("     {d:4.1}  {e:9.2}  {e:9.2}  {e:8.1}\n", .{ tcur, y.data[0].re, y.data[0].im, 0.0 });
 
     for (1..Nt + 1) |_| {
-        const ierr = c.ARKodeEvolve(arkode_mem, tout, sunvec_y, &tcur, c.ARK_NORMAL);
+        const ierr = c.ARKodeEvolve(arkode_mem.?, tout, sunvec_y, &tcur, c.ARK_NORMAL);
         if (ierr < 0) {
             std.debug.print("Error in FARKodeEvolve, ierr = {}; halting\n", .{ierr});
             return error.EvolveFailed;
@@ -116,6 +109,6 @@ pub fn main() !void {
     yerr2 = @sqrt(yerr2 / @as(f64, @floatFromInt(Nt)));
     std.debug.print("   -------------------------------------------\n", .{});
 
-    ARKStepStats(arkode_mem);
+    ARKStepStats(arkode_mem.?);
     std.debug.print("    Error: max = {e:9.2}, rms = {e:9.2}\n \n", .{ yerrI, yerr2 });
 }
