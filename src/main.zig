@@ -12,7 +12,6 @@ pub const c = @cImport({
 
 const VtuWriter = @import("vtu_writer");
 
-
 inline fn asNVector(v: nv.N_Vector) c.N_Vector {
     return @ptrCast(v);
 }
@@ -55,6 +54,8 @@ const Diagnostics = struct {
     norm: f64,
     x_mean: f64,
     y_mean: f64,
+    sigma_x: f64,
+    sigma_y: f64,
     peak_amp: f64,
 };
 
@@ -196,6 +197,8 @@ fn computeDiagnostics(y: *nvector_complex.CVec) Diagnostics {
     var sum_prob: f64 = 0.0;
     var sum_xprob: f64 = 0.0;
     var sum_yprob: f64 = 0.0;
+    var sum_x2prob: f64 = 0.0;
+    var sum_y2prob: f64 = 0.0;
     var peak_amp: f64 = 0.0;
 
     for (0..Ny) |iy| {
@@ -209,6 +212,8 @@ fn computeDiagnostics(y: *nvector_complex.CVec) Diagnostics {
             sum_prob += prob;
             sum_xprob += xcoord * prob;
             sum_yprob += ycoord * prob;
+            sum_x2prob += xcoord * xcoord * prob;
+            sum_y2prob += ycoord * ycoord * prob;
             if (amp > peak_amp) peak_amp = amp;
         }
     }
@@ -218,14 +223,23 @@ fn computeDiagnostics(y: *nvector_complex.CVec) Diagnostics {
             .norm = 0.0,
             .x_mean = 0.0,
             .y_mean = 0.0,
+            .sigma_x = 0.0,
+            .sigma_y = 0.0,
             .peak_amp = peak_amp,
         };
     }
 
+    const x_mean = sum_xprob / sum_prob;
+    const y_mean = sum_yprob / sum_prob;
+    const var_x = @max(0.0, sum_x2prob / sum_prob - x_mean * x_mean);
+    const var_y = @max(0.0, sum_y2prob / sum_prob - y_mean * y_mean);
+
     return .{
         .norm = sum_prob * cell_area,
-        .x_mean = sum_xprob / sum_prob,
-        .y_mean = sum_yprob / sum_prob,
+        .x_mean = x_mean,
+        .y_mean = y_mean,
+        .sigma_x = @sqrt(var_x),
+        .sigma_y = @sqrt(var_y),
         .peak_amp = peak_amp,
     };
 }
@@ -348,18 +362,20 @@ pub fn main() !void {
     var diagnostics = computeDiagnostics(y);
     var filename_buf: [256]u8 = undefined;
 
-    std.debug.print("\n step        t          norm       x_mean     y_mean    peak|psi|\n", .{});
-    std.debug.print("--------------------------------------------------------------------\n", .{});
-    std.debug.print(" {:>4}  {d:.6}  {d:.6}  {d:.6}  {d:.6}  {d:.6}\n", .{
+    std.debug.print("\n step        t            norm         x_mean     y_mean    sigma_x   sigma_y   peak|psi|\n", .{});
+    std.debug.print("--------------------------------------------------------------------------------------------\n", .{});
+    std.debug.print(" {:>4}  {d:.6}  {d:.10}  {d:.6}  {d:.6}  {d:.6}  {d:.6}  {d:.6}\n", .{
         0,
         tcur,
         diagnostics.norm,
         diagnostics.x_mean,
         diagnostics.y_mean,
+        diagnostics.sigma_x,
+        diagnostics.sigma_y,
         diagnostics.peak_amp,
     });
 
-    var filename = try std.fmt.bufPrint(&filename_buf, "schrodinger2d_t{d:0>10.6}.vtu", .{tcur});
+    var filename = try std.fmt.bufPrint(&filename_buf, "schrodinger2d_t{d:0>4}.vtu", .{0});
     try plotter.plot(y, tcur, filename);
 
     for (1..Nt + 1) |step| {
@@ -370,22 +386,24 @@ pub fn main() !void {
         }
 
         diagnostics = computeDiagnostics(y);
-        std.debug.print(" {:>4}  {d:.6}  {d:.6}  {d:.6}  {d:.6}  {d:.6}\n", .{
+        std.debug.print(" {:>4}  {d:.6}  {d:.10}  {d:.6}  {d:.6}  {d:.6}  {d:.6}  {d:.6}\n", .{
             step,
             tcur,
             diagnostics.norm,
             diagnostics.x_mean,
             diagnostics.y_mean,
+            diagnostics.sigma_x,
+            diagnostics.sigma_y,
             diagnostics.peak_amp,
         });
 
-        filename = try std.fmt.bufPrint(&filename_buf, "schrodinger2d_t{d:0>10.6}.vtu", .{tcur});
+        filename = try std.fmt.bufPrint(&filename_buf, "schrodinger2d_t{d:0>4}.vtu", .{step});
         try plotter.plot(y, tcur, filename);
 
         tout = @min(tout + dTout, Tf);
     }
 
-    std.debug.print("--------------------------------------------------------------------\n", .{});
+    std.debug.print("--------------------------------------------------------------------------------------------\n", .{});
     ARKStepStats(arkode_mem.?);
     std.debug.print("Wrote {} VTU files and schrodinger2d.vtu.series\n", .{plotter.num_plotted});
     std.debug.print("Final packet center: ({d:.6}, {d:.6}), norm = {d:.6}\n\n", .{
