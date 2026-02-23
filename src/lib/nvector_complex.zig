@@ -62,6 +62,7 @@ fn init_ops(v: c.N_Vector) void {
     ops.*.nvabs = N_VAbs_Complex;
     ops.*.nvinv = N_VInv_Complex;
     ops.*.nvaddconst = N_VAddConst_Complex;
+    ops.*.nvdotprod = N_VDotProd_Complex;
     ops.*.nvmaxnorm = N_VMaxNorm_Complex;
     ops.*.nvwrmsnorm = N_VWRMSNorm_Complex;
     ops.*.nvwrmsnormmask = N_VWRMSNormMask_Complex;
@@ -70,6 +71,7 @@ fn init_ops(v: c.N_Vector) void {
     ops.*.nvl1norm = N_VL1Norm_Complex;
     ops.*.nvinvtest = N_VInvTest_Complex;
     ops.*.nvmaxnormlocal = N_VMaxNorm_Complex;
+    ops.*.nvdotprodlocal = N_VDotProd_Complex;
     ops.*.nvminlocal = N_VMin_Complex;
     ops.*.nvl1normlocal = N_VL1Norm_Complex;
     ops.*.nvinvtestlocal = N_VInvTest_Complex;
@@ -196,6 +198,17 @@ pub export fn N_VAddConst_Complex(x_vec: c.N_Vector, b: c.sunrealtype, z_vec: c.
     for (0..n) |i| {
         z.data[i] = x.data[i].add(b_c);
     }
+}
+
+pub export fn N_VDotProd_Complex(x_vec: c.N_Vector, y_vec: c.N_Vector) c.sunrealtype {
+    const x = N_VGetCVec(x_vec);
+    const y = N_VGetCVec(y_vec);
+    const n: usize = @intCast(x.len);
+    var sum: f64 = 0.0;
+    for (0..n) |i| {
+        sum += x.data[i].re * y.data[i].re + x.data[i].im * y.data[i].im;
+    }
+    return sum;
 }
 
 pub export fn N_VMaxNorm_Complex(x_vec: c.N_Vector) c.sunrealtype {

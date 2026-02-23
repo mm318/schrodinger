@@ -7,6 +7,7 @@ const nv = nvector_complex.c;
 pub const c = @cImport({
     @cInclude("arkode/arkode.h");
     @cInclude("arkode/arkode_arkstep.h");
+    @cInclude("sunnonlinsol/sunnonlinsol_fixedpoint.h");
 });
 
 const VtuWriter = @import("vtu_writer");
@@ -38,6 +39,7 @@ const T0: f64 = 0.0;
 const Tf: f64 = 0.006;
 const reltol: f64 = 1.0e-6;
 const abstol: f64 = 1.0e-9;
+const internal_substeps: usize = 10;
 
 const dx = domain_length / @as(f64, @floatFromInt(Nx));
 const dy = domain_length / @as(f64, @floatFromInt(Ny));
@@ -262,17 +264,17 @@ export fn Rhs(tn: c.sunrealtype, sunvec_y: c.N_Vector, sunvec_f: c.N_Vector, use
 fn ARKStepStats(arkode_mem: *anyopaque) void {
     var nsteps: c_long = 0;
     var nst_a: c_long = 0;
-    var nfe: c_long = 0;
+    var nfi: c_long = 0;
     var netfails: c_long = 0;
 
     _ = c.ARKodeGetNumSteps(arkode_mem, &nsteps);
     _ = c.ARKodeGetNumStepAttempts(arkode_mem, &nst_a);
-    _ = c.ARKodeGetNumRhsEvals(arkode_mem, 0, &nfe);
+    _ = c.ARKodeGetNumRhsEvals(arkode_mem, 1, &nfi);
     _ = c.ARKodeGetNumErrTestFails(arkode_mem, &netfails);
 
     std.debug.print("\nFinal Solver Statistics:\n", .{});
     std.debug.print("    Internal solver steps = {}, (attempted = {})\n", .{ nsteps, nst_a });
-    std.debug.print("    Total RHS evals = {}\n", .{nfe});
+    std.debug.print("    Total implicit RHS evals = {}\n", .{nfi});
     std.debug.print("    Total number of error test failures ={}\n", .{netfails});
 }
 
@@ -290,37 +292,59 @@ pub fn main() !void {
     std.debug.print("    grid = {} x {}, timesteps = {}\n", .{ Nx, Ny, Nt });
     std.debug.print("    packet radius = {d:.3}, center = ({d:.3}, {d:.3})\n", .{ packet_radius, packet_x0, packet_y0 });
     std.debug.print("    packet wavevector = ({d:.3}, {d:.3})\n", .{ packet_kx, packet_ky });
-    std.debug.print("    reltol = {e}, abstol = {e}\n", .{ reltol, abstol });
+    std.debug.print("    ARKODE method = implicit midpoint (DIRK), reltol = {e}, abstol = {e}\n", .{ reltol, abstol });
+    std.debug.print("    internal fixed substeps per output step = {}\n", .{internal_substeps});
 
     const sunvec_y = try nvector_complex.N_VNew_Complex(@intCast(neq), asComplexSunContext(sunctx));
     defer nvector_complex.N_VDestroy_Complex(sunvec_y);
     const y = nvector_complex.N_VGetCVec(sunvec_y);
-
     initializeWavefunction(y);
 
     var plotter = try Plotter.init(allocator);
     defer plotter.deinit();
     try plotter.startSeries();
 
-    var arkode_mem: ?*anyopaque = c.ARKStepCreate(Rhs, null, T0, asNVector(sunvec_y), sunctx) orelse {
-        std.debug.print("ERROR: arkode_mem = NULL\n", .{});
-        return;
+    var arkode_mem: ?*anyopaque = c.ARKStepCreate(null, Rhs, T0, asNVector(sunvec_y), sunctx) orelse {
+        std.debug.print("ERROR: ARKStepCreate failed\n", .{});
+        return error.SolverSetupFailed;
     };
     defer c.ARKodeFree(&arkode_mem);
+
+    if (c.ARKStepSetTableNum(arkode_mem.?, c.ARKODE_IMPLICIT_MIDPOINT_1_2, c.ARKODE_ERK_NONE) != 0) {
+        std.debug.print("ERROR: ARKStepSetTableNum failed\n", .{});
+        return error.SolverSetupFailed;
+    }
+
+    const nls = c.SUNNonlinSol_FixedPoint(asNVector(sunvec_y), 0, sunctx);
+    if (nls == null) {
+        std.debug.print("ERROR: SUNNonlinSol_FixedPoint failed\n", .{});
+        return error.SolverSetupFailed;
+    }
+    defer _ = c.SUNNonlinSolFree(nls);
+
+    if (c.ARKodeSetNonlinearSolver(arkode_mem.?, nls) != 0) {
+        std.debug.print("ERROR: ARKodeSetNonlinearSolver failed\n", .{});
+        return error.SolverSetupFailed;
+    }
 
     if (c.ARKodeSStolerances(arkode_mem.?, reltol, abstol) != 0) {
         std.debug.print("ERROR: ARKodeSStolerances failed\n", .{});
         return error.SolverSetupFailed;
     }
-
-    var tcur: f64 = T0;
-    const dTout = (Tf - T0) / @as(f64, @floatFromInt(Nt));
-    if (c.ARKodeSetFixedStep(arkode_mem.?, dTout) != 0) {
-        std.debug.print("ERROR: ARKodeSetFixedStep failed\n", .{});
+    if (c.ARKodeSetMaxNonlinIters(arkode_mem.?, 20) != 0) {
+        std.debug.print("ERROR: ARKodeSetMaxNonlinIters failed\n", .{});
         return error.SolverSetupFailed;
     }
 
+    var tcur: f64 = T0;
+    const dTout = (Tf - T0) / @as(f64, @floatFromInt(Nt));
+    const hfixed = dTout / @as(f64, @floatFromInt(internal_substeps));
+    if (c.ARKodeSetFixedStep(arkode_mem.?, hfixed) != 0) {
+        std.debug.print("ERROR: ARKodeSetFixedStep failed\n", .{});
+        return error.SolverSetupFailed;
+    }
     var tout = T0 + dTout;
+
     var diagnostics = computeDiagnostics(y);
     var filename_buf: [256]u8 = undefined;
 
@@ -362,7 +386,6 @@ pub fn main() !void {
     }
 
     std.debug.print("--------------------------------------------------------------------\n", .{});
-
     ARKStepStats(arkode_mem.?);
     std.debug.print("Wrote {} VTU files and schrodinger2d.vtu.series\n", .{plotter.num_plotted});
     std.debug.print("Final packet center: ({d:.6}, {d:.6}), norm = {d:.6}\n\n", .{
