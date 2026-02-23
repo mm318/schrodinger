@@ -1,8 +1,29 @@
 const std = @import("std");
 
 const nvector_complex = @import("nvector_complex");
-const c = nvector_complex.c;
 const Complex = nvector_complex.Complex;
+
+const nv = nvector_complex.c;
+pub const c = @cImport({
+    @cInclude("arkode/arkode.h");
+    @cInclude("arkode/arkode_arkstep.h");
+});
+
+inline fn asNVector(v: nv.N_Vector) c.N_Vector {
+    return @ptrCast(v);
+}
+
+inline fn asComplexNVector(v: c.N_Vector) nv.N_Vector {
+    return @ptrCast(v);
+}
+
+inline fn asSunContext(ctx: nv.SUNContext) c.SUNContext {
+    return @ptrCast(ctx);
+}
+
+inline fn asComplexSunContext(ctx: c.SUNContext) nv.SUNContext {
+    return @ptrCast(ctx);
+}
 
 const neq: usize = 1;
 const Nt: usize = 10;
@@ -16,8 +37,8 @@ const abstol: f64 = 1.0e-10;
 export fn Rhs(tn: c.sunrealtype, sunvec_y: c.N_Vector, sunvec_f: c.N_Vector, user_data: ?*anyopaque) c_int {
     _ = tn;
     _ = user_data;
-    const y = nvector_complex.N_VGetCVec(sunvec_y);
-    const f = nvector_complex.N_VGetCVec(sunvec_f);
+    const y = nvector_complex.N_VGetCVec(asComplexNVector(sunvec_y));
+    const f = nvector_complex.N_VGetCVec(asComplexNVector(sunvec_f));
 
     f.data[0] = y.data[0].mul(lambda);
     return 0;
@@ -62,13 +83,13 @@ pub fn main() !void {
     std.debug.print("    lambda = ( {e} , {e} ) \n", .{ lambda.re, lambda.im });
     std.debug.print("    reltol = {e},  abstol = {e}\n", .{ reltol, abstol });
 
-    const sunvec_y = try nvector_complex.N_VNew_Complex(@intCast(neq), sunctx);
+    const sunvec_y = try nvector_complex.N_VNew_Complex(@intCast(neq), asComplexSunContext(sunctx));
     defer nvector_complex.N_VDestroy_Complex(sunvec_y);
     const y = nvector_complex.N_VGetCVec(sunvec_y);
 
     y.data[0] = Sol(T0);
 
-    var arkode_mem: ?*anyopaque = c.ARKStepCreate(Rhs, null, T0, sunvec_y, sunctx) orelse {
+    var arkode_mem: ?*anyopaque = c.ARKStepCreate(Rhs, null, T0, asNVector(sunvec_y), sunctx) orelse {
         std.debug.print("ERROR: arkode_mem = NULL\n", .{});
         return;
     };
@@ -88,7 +109,7 @@ pub fn main() !void {
     std.debug.print("     {d:4.1}  {e:9.2}  {e:9.2}  {e:8.1}\n", .{ tcur, y.data[0].re, y.data[0].im, 0.0 });
 
     for (1..Nt + 1) |_| {
-        const ierr = c.ARKodeEvolve(arkode_mem.?, tout, sunvec_y, &tcur, c.ARK_NORMAL);
+        const ierr = c.ARKodeEvolve(arkode_mem.?, tout, asNVector(sunvec_y), &tcur, c.ARK_NORMAL);
         if (ierr < 0) {
             std.debug.print("Error in FARKodeEvolve, ierr = {}; halting\n", .{ierr});
             return error.EvolveFailed;

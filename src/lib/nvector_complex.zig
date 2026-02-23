@@ -5,8 +5,6 @@ pub const c = @cImport({
     @cInclude("sundials/sundials_types.h");
     @cInclude("sundials/sundials_math.h");
     @cInclude("sundials/sundials_core.h");
-    @cInclude("arkode/arkode.h");
-    @cInclude("arkode/arkode_arkstep.h");
 });
 
 pub const Complex = std.math.Complex(f64);

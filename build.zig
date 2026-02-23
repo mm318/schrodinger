@@ -8,11 +8,12 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    const arkode_lib = arkode_dep.artifact("arkode");
     const vtu_dep = b.dependency("vtu_writer", .{
         .target = target,
         .optimize = optimize,
     });
+
+    const arkode_lib = arkode_dep.artifact("arkode");
 
     const complex_vector_mod = b.createModule(.{
         .root_source_file = b.path("src/lib/nvector_complex.zig"),
@@ -32,7 +33,7 @@ pub fn build(b: *std.Build) void {
     });
     exe_mod.addImport("vtu_writer", vtu_dep.module("vtu_writer"));
     exe_mod.addImport("nvector_complex", complex_vector_mod);
-    exe_mod.linkLibrary(arkode_lib);
+    exe_mod.addIncludePath(arkode_lib.getEmittedIncludeTree());
 
     // This creates another `std.Build.Step.Compile` that builds an executable
     const exe = b.addExecutable(.{
