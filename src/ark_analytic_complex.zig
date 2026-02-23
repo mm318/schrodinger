@@ -17,22 +17,121 @@ inline fn asComplexNVector(v: c.N_Vector) nv.N_Vector {
     return @ptrCast(v);
 }
 
-inline fn asSunContext(ctx: nv.SUNContext) c.SUNContext {
-    return @ptrCast(ctx);
-}
-
 inline fn asComplexSunContext(ctx: c.SUNContext) nv.SUNContext {
     return @ptrCast(ctx);
 }
 
-const neq: usize = 1;
-const Nt: usize = 10;
-const lambda = Complex.init(-1.0e-2, 10.0);
+const Nx: usize = 64;
+const Ny: usize = 64;
+const neq: usize = Nx * Ny;
+const Nt: usize = 50;
+const domain_length: f64 = 1.0;
+const packet_radius: f64 = 0.1;
+const packet_x0: f64 = 0.2;
+const packet_y0: f64 = 0.5;
+const packet_kx: f64 = 40.0;
+const packet_ky: f64 = 0.0;
 const T0: f64 = 0.0;
-const Tf: f64 = 10.0;
-const dtmax: f64 = 0.01;
+const Tf: f64 = 0.0025;
 const reltol: f64 = 1.0e-6;
-const abstol: f64 = 1.0e-10;
+const abstol: f64 = 1.0e-9;
+
+const dx = domain_length / @as(f64, @floatFromInt(Nx));
+const dy = domain_length / @as(f64, @floatFromInt(Ny));
+const inv_dx2 = 1.0 / (dx * dx);
+const inv_dy2 = 1.0 / (dy * dy);
+const cell_area = dx * dy;
+const two = Complex.init(2.0, 0.0);
+const i_half = Complex.init(0.0, 0.5);
+const inv_dx2_c = Complex.init(inv_dx2, 0.0);
+const inv_dy2_c = Complex.init(inv_dy2, 0.0);
+
+const Diagnostics = struct {
+    norm: f64,
+    x_mean: f64,
+    y_mean: f64,
+    peak_amp: f64,
+};
+
+inline fn idx(ix: usize, iy: usize) usize {
+    return iy * Nx + ix;
+}
+
+fn normalizeWavefunction(y: *nvector_complex.CVec) void {
+    var sum_prob: f64 = 0.0;
+    for (0..neq) |i| {
+        const psi = y.data[i];
+        sum_prob += psi.re * psi.re + psi.im * psi.im;
+    }
+
+    const norm = sum_prob * cell_area;
+    if (norm == 0.0) return;
+
+    const scale = 1.0 / @sqrt(norm);
+    const scale_c = Complex.init(scale, 0.0);
+    for (0..neq) |i| {
+        y.data[i] = y.data[i].mul(scale_c);
+    }
+}
+
+fn initializeWavefunction(y: *nvector_complex.CVec) void {
+    const sigma2 = packet_radius * packet_radius;
+    for (0..Ny) |iy| {
+        const ycoord = (@as(f64, @floatFromInt(iy)) + 0.5) * dy;
+        for (0..Nx) |ix| {
+            const xcoord = (@as(f64, @floatFromInt(ix)) + 0.5) * dx;
+            const rx = xcoord - packet_x0;
+            const ry = ycoord - packet_y0;
+            const r2 = rx * rx + ry * ry;
+            const envelope = @exp(-r2 / (2.0 * sigma2));
+            const phase = packet_kx * xcoord + packet_ky * ycoord;
+            y.data[idx(ix, iy)] = Complex.init(
+                envelope * @cos(phase),
+                envelope * @sin(phase),
+            );
+        }
+    }
+
+    normalizeWavefunction(y);
+}
+
+fn computeDiagnostics(y: *nvector_complex.CVec) Diagnostics {
+    var sum_prob: f64 = 0.0;
+    var sum_xprob: f64 = 0.0;
+    var sum_yprob: f64 = 0.0;
+    var peak_amp: f64 = 0.0;
+
+    for (0..Ny) |iy| {
+        const ycoord = (@as(f64, @floatFromInt(iy)) + 0.5) * dy;
+        for (0..Nx) |ix| {
+            const xcoord = (@as(f64, @floatFromInt(ix)) + 0.5) * dx;
+            const psi = y.data[idx(ix, iy)];
+            const prob = psi.re * psi.re + psi.im * psi.im;
+            const amp = @sqrt(prob);
+
+            sum_prob += prob;
+            sum_xprob += xcoord * prob;
+            sum_yprob += ycoord * prob;
+            if (amp > peak_amp) peak_amp = amp;
+        }
+    }
+
+    if (sum_prob == 0.0) {
+        return .{
+            .norm = 0.0,
+            .x_mean = 0.0,
+            .y_mean = 0.0,
+            .peak_amp = peak_amp,
+        };
+    }
+
+    return .{
+        .norm = sum_prob * cell_area,
+        .x_mean = sum_xprob / sum_prob,
+        .y_mean = sum_yprob / sum_prob,
+        .peak_amp = peak_amp,
+    };
+}
 
 export fn Rhs(tn: c.sunrealtype, sunvec_y: c.N_Vector, sunvec_f: c.N_Vector, user_data: ?*anyopaque) c_int {
     _ = tn;
@@ -40,17 +139,29 @@ export fn Rhs(tn: c.sunrealtype, sunvec_y: c.N_Vector, sunvec_f: c.N_Vector, use
     const y = nvector_complex.N_VGetCVec(asComplexNVector(sunvec_y));
     const f = nvector_complex.N_VGetCVec(asComplexNVector(sunvec_f));
 
-    f.data[0] = y.data[0].mul(lambda);
-    return 0;
-}
+    for (0..Ny) |iy| {
+        const iy_d = if (iy == 0) Ny - 1 else iy - 1;
+        const iy_u = if (iy + 1 == Ny) 0 else iy + 1;
+        for (0..Nx) |ix| {
+            const ix_l = if (ix == 0) Nx - 1 else ix - 1;
+            const ix_r = if (ix + 1 == Nx) 0 else ix + 1;
 
-fn Sol(tn: f64) Complex {
-    // 2.0 * exp(lambda * tn)
-    // exp(x + iy) = exp(x) * (cos(y) + i sin(y))
-    const lt = lambda.mul(Complex.init(tn, 0.0));
-    const exp_re = @exp(lt.re);
-    const c_val = Complex.init(exp_re * @cos(lt.im), exp_re * @sin(lt.im));
-    return c_val.mul(Complex.init(2.0, 0.0));
+            const center_id = idx(ix, iy);
+            const center = y.data[center_id];
+
+            const lap_x = y.data[idx(ix_r, iy)]
+                .add(y.data[idx(ix_l, iy)])
+                .sub(center.mul(two))
+                .mul(inv_dx2_c);
+            const lap_y = y.data[idx(ix, iy_u)]
+                .add(y.data[idx(ix, iy_d)])
+                .sub(center.mul(two))
+                .mul(inv_dy2_c);
+
+            f.data[center_id] = lap_x.add(lap_y).mul(i_half);
+        }
+    }
+    return 0;
 }
 
 fn ARKStepStats(arkode_mem: *anyopaque) void {
@@ -78,16 +189,17 @@ pub fn main() !void {
     }
     defer _ = c.SUNContext_Free(&sunctx);
 
-    std.debug.print("  \n", .{});
-    std.debug.print("Analytical ODE test problem:\n", .{});
-    std.debug.print("    lambda = ( {e} , {e} ) \n", .{ lambda.re, lambda.im });
-    std.debug.print("    reltol = {e},  abstol = {e}\n", .{ reltol, abstol });
+    std.debug.print("\n2D Schrödinger simulation on a unit square:\n", .{});
+    std.debug.print("    grid = {} x {}, timesteps = {}\n", .{ Nx, Ny, Nt });
+    std.debug.print("    packet radius = {d:.3}, center = ({d:.3}, {d:.3})\n", .{ packet_radius, packet_x0, packet_y0 });
+    std.debug.print("    packet wavevector = ({d:.3}, {d:.3})\n", .{ packet_kx, packet_ky });
+    std.debug.print("    reltol = {e}, abstol = {e}\n", .{ reltol, abstol });
 
     const sunvec_y = try nvector_complex.N_VNew_Complex(@intCast(neq), asComplexSunContext(sunctx));
     defer nvector_complex.N_VDestroy_Complex(sunvec_y);
     const y = nvector_complex.N_VGetCVec(sunvec_y);
 
-    y.data[0] = Sol(T0);
+    initializeWavefunction(y);
 
     var arkode_mem: ?*anyopaque = c.ARKStepCreate(Rhs, null, T0, asNVector(sunvec_y), sunctx) orelse {
         std.debug.print("ERROR: arkode_mem = NULL\n", .{});
@@ -95,41 +207,58 @@ pub fn main() !void {
     };
     defer c.ARKodeFree(&arkode_mem);
 
-    _ = c.ARKodeSStolerances(arkode_mem.?, reltol, abstol);
+    if (c.ARKodeSStolerances(arkode_mem.?, reltol, abstol) != 0) {
+        std.debug.print("ERROR: ARKodeSStolerances failed\n", .{});
+        return error.SolverSetupFailed;
+    }
 
     var tcur: f64 = T0;
     const dTout = (Tf - T0) / @as(f64, @floatFromInt(Nt));
+    if (c.ARKodeSetFixedStep(arkode_mem.?, dTout) != 0) {
+        std.debug.print("ERROR: ARKodeSetFixedStep failed\n", .{});
+        return error.SolverSetupFailed;
+    }
+
     var tout = T0 + dTout;
-    var yerrI: f64 = 0.0;
-    var yerr2: f64 = 0.0;
+    var diagnostics = computeDiagnostics(y);
 
-    std.debug.print(" \n", .{});
-    std.debug.print("      t     real(u)    imag(u)    error\n", .{});
-    std.debug.print("   -------------------------------------------\n", .{});
-    std.debug.print("     {d:4.1}  {e:9.2}  {e:9.2}  {e:8.1}\n", .{ tcur, y.data[0].re, y.data[0].im, 0.0 });
+    std.debug.print("\n step        t          norm       x_mean     y_mean    peak|psi|\n", .{});
+    std.debug.print("--------------------------------------------------------------------\n", .{});
+    std.debug.print(" {:>4}  {d:.6}  {d:.6}  {d:.6}  {d:.6}  {d:.6}\n", .{
+        0,
+        tcur,
+        diagnostics.norm,
+        diagnostics.x_mean,
+        diagnostics.y_mean,
+        diagnostics.peak_amp,
+    });
 
-    for (1..Nt + 1) |_| {
+    for (1..Nt + 1) |step| {
         const ierr = c.ARKodeEvolve(arkode_mem.?, tout, asNVector(sunvec_y), &tcur, c.ARK_NORMAL);
         if (ierr < 0) {
-            std.debug.print("Error in FARKodeEvolve, ierr = {}; halting\n", .{ierr});
+            std.debug.print("ERROR: ARKodeEvolve failed, ierr = {}\n", .{ierr});
             return error.EvolveFailed;
         }
 
-        const sol = Sol(tcur);
-        const diff = y.data[0].sub(sol);
-        const yerr = diff.magnitude();
-
-        if (yerr > yerrI) yerrI = yerr;
-        yerr2 += yerr * yerr;
-
-        std.debug.print("     {d:4.1}  {e:9.2}  {e:9.2}  {e:8.1}\n", .{ tcur, y.data[0].re, y.data[0].im, yerr });
+        diagnostics = computeDiagnostics(y);
+        std.debug.print(" {:>4}  {d:.6}  {d:.6}  {d:.6}  {d:.6}  {d:.6}\n", .{
+            step,
+            tcur,
+            diagnostics.norm,
+            diagnostics.x_mean,
+            diagnostics.y_mean,
+            diagnostics.peak_amp,
+        });
 
         tout = @min(tout + dTout, Tf);
     }
 
-    yerr2 = @sqrt(yerr2 / @as(f64, @floatFromInt(Nt)));
-    std.debug.print("   -------------------------------------------\n", .{});
+    std.debug.print("--------------------------------------------------------------------\n", .{});
 
     ARKStepStats(arkode_mem.?);
-    std.debug.print("    Error: max = {e:9.2}, rms = {e:9.2}\n \n", .{ yerrI, yerr2 });
+    std.debug.print("Final packet center: ({d:.6}, {d:.6}), norm = {d:.6}\n\n", .{
+        diagnostics.x_mean,
+        diagnostics.y_mean,
+        diagnostics.norm,
+    });
 }
