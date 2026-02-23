@@ -4,6 +4,10 @@ const nvector_complex = @import("nvector_complex");
 const c = nvector_complex.c;
 const Complex = nvector_complex.Complex;
 
+pub const std_options: std.Options = .{
+    .log_level = .info,
+};
+
 fn check_ans(val: Complex, tol: f64, N: usize, sunvec_x: c.N_Vector) i32 {
     const x = nvector_complex.N_VGetCVec(sunvec_x);
     for (0..N) |i| {
@@ -14,13 +18,13 @@ fn check_ans(val: Complex, tol: f64, N: usize, sunvec_x: c.N_Vector) i32 {
     return 0;
 }
 
-pub fn main() !void {
+fn runAllChecks() !void {
     var fails: i32 = 0;
     const N: usize = 1000;
 
     var sunctx: c.SUNContext = null;
     if (c.SUNContext_Create(c.SUN_COMM_NULL, &sunctx) != 0) {
-        std.info.print("ERROR: SUNContext_Create failed\n", .{});
+        std.log.err("ERROR: SUNContext_Create failed", .{});
         return;
     }
     defer _ = c.SUNContext_Free(&sunctx);
@@ -53,19 +57,19 @@ pub fn main() !void {
     // ! check vector ID
     if (nvector_complex.N_VGetVectorID_Complex(sU) != c.SUNDIALS_NVEC_CUSTOM) {
         fails += 1;
-        std.info.print(">>> FAILED test\n", .{});
+        std.log.info(">>> FAILED test", .{});
         // print *, '    Unrecognized vector type', FN_VGetVectorID(sU)
     } else {
-        std.info.print("PASSED test\n", .{});
+        std.log.info("PASSED test", .{});
     }
     //
     // ! check vector length
     if (nvector_complex.N_VGetLength_Complex(sV) != N) {
         fails += 1;
-        std.info.print(">>> FAILED test\n", .{});
+        std.log.info(">>> FAILED test", .{});
         // print *, '    ', FN_VGetLength(sV), ' /= ', N
     } else {
-        std.info.print("PASSED test\n", .{});
+        std.log.info("PASSED test", .{});
     }
     //
     // ! test FN_VConst
@@ -75,9 +79,9 @@ pub fn main() !void {
     c.N_VConst(1.0, sU);
     if (check_ans(Complex.init(1.0, 0.0), 1.e-14, N, sU) != 0) {
         fails += 1;
-        std.info.print(">>> FAILED test\n", .{});
+        std.log.info(">>> FAILED test", .{});
     } else {
-        std.info.print("PASSED test\n", .{});
+        std.log.info("PASSED test", .{});
     }
     //
     // ! test FN_VLinearSum
@@ -90,9 +94,9 @@ pub fn main() !void {
     c.N_VLinearSum(1.0, sX, 1.0, sY, sY);
     if (check_ans(Complex.init(-1.0, 1.0), 1.e-14, N, sY) != 0) {
         fails += 1;
-        std.info.print(">>> FAILED test\n", .{});
+        std.log.info(">>> FAILED test", .{});
     } else {
-        std.info.print("PASSED test\n", .{});
+        std.log.info("PASSED test", .{});
     }
     //
     for (0..N) |i| {
@@ -104,9 +108,9 @@ pub fn main() !void {
     c.N_VLinearSum(-1.0, sX, 1.0, sY, sY);
     if (check_ans(Complex.init(1.0, -1.0), 1.e-14, N, sY) != 0) {
         fails += 1;
-        std.info.print(">>> FAILED test\n", .{});
+        std.log.info(">>> FAILED test", .{});
     } else {
-        std.info.print("PASSED test\n", .{});
+        std.log.info("PASSED test", .{});
     }
     //
     for (0..N) |i| {
@@ -118,9 +122,9 @@ pub fn main() !void {
     c.N_VLinearSum(0.50, sX, 1.0, sY, sY);
     if (check_ans(Complex.init(-1.0, 1.0), 1.e-14, N, sY) != 0) {
         fails += 1;
-        std.info.print(">>> FAILED test\n", .{});
+        std.log.info(">>> FAILED test", .{});
     } else {
-        std.info.print("PASSED test\n", .{});
+        std.log.info("PASSED test", .{});
     }
     //
     for (0..N) |i| {
@@ -132,9 +136,9 @@ pub fn main() !void {
     c.N_VLinearSum(1.0, sX, 1.0, sY, sX);
     if (check_ans(Complex.init(1.0, -1.0), 1.e-14, N, sX) != 0) {
         fails += 1;
-        std.info.print(">>> FAILED test\n", .{});
+        std.log.info(">>> FAILED test", .{});
     } else {
-        std.info.print("PASSED test\n", .{});
+        std.log.info("PASSED test", .{});
     }
     //
     for (0..N) |i| {
@@ -146,9 +150,9 @@ pub fn main() !void {
     c.N_VLinearSum(1.0, sX, -1.0, sY, sX);
     if (check_ans(Complex.init(-1.0, 1.0), 1.e-14, N, sX) != 0) {
         fails += 1;
-        std.info.print(">>> FAILED test\n", .{});
+        std.log.info(">>> FAILED test", .{});
     } else {
-        std.info.print("PASSED test\n", .{});
+        std.log.info("PASSED test", .{});
     }
     //
     for (0..N) |i| {
@@ -160,9 +164,9 @@ pub fn main() !void {
     c.N_VLinearSum(1.0, sX, 2.0, sY, sX);
     if (check_ans(Complex.init(1.0, -1.0), 1.e-14, N, sX) != 0) {
         fails += 1;
-        std.info.print(">>> FAILED test\n", .{});
+        std.log.info(">>> FAILED test", .{});
     } else {
-        std.info.print("PASSED test\n", .{});
+        std.log.info("PASSED test", .{});
     }
     //
     for (0..N) |i| {
@@ -177,9 +181,9 @@ pub fn main() !void {
     c.N_VLinearSum(1.0, sX, 1.0, sY, sZ);
     if (check_ans(Complex.init(-1.0, 1.0), 1.e-14, N, sZ) != 0) {
         fails += 1;
-        std.info.print(">>> FAILED test\n", .{});
+        std.log.info(">>> FAILED test", .{});
     } else {
-        std.info.print("PASSED test\n", .{});
+        std.log.info("PASSED test", .{});
     }
     //
     for (0..N) |i| {
@@ -194,9 +198,9 @@ pub fn main() !void {
     c.N_VLinearSum(1.0, sX, -1.0, sY, sZ);
     if (check_ans(Complex.init(1.0, -1.0), 1.e-14, N, sZ) != 0) {
         fails += 1;
-        std.info.print(">>> FAILED test\n", .{});
+        std.log.info(">>> FAILED test", .{});
     } else {
-        std.info.print("PASSED test\n", .{});
+        std.log.info("PASSED test", .{});
     }
     //
     for (0..N) |i| {
@@ -211,9 +215,9 @@ pub fn main() !void {
     c.N_VLinearSum(-1.0, sX, 1.0, sY, sZ);
     if (check_ans(Complex.init(-1.0, 1.0), 1.e-14, N, sZ) != 0) {
         fails += 1;
-        std.info.print(">>> FAILED test\n", .{});
+        std.log.info(">>> FAILED test", .{});
     } else {
-        std.info.print("PASSED test\n", .{});
+        std.log.info("PASSED test", .{});
     }
     //
     for (0..N) |i| {
@@ -228,9 +232,9 @@ pub fn main() !void {
     c.N_VLinearSum(1.0, sX, 2.0, sY, sZ);
     if (check_ans(Complex.init(1.0, -1.0), 1.e-14, N, sZ) != 0) {
         fails += 1;
-        std.info.print(">>> FAILED test\n", .{});
+        std.log.info(">>> FAILED test", .{});
     } else {
-        std.info.print("PASSED test\n", .{});
+        std.log.info("PASSED test", .{});
     }
     //
     for (0..N) |i| {
@@ -245,9 +249,9 @@ pub fn main() !void {
     c.N_VLinearSum(2.0, sX, 1.0, sY, sZ);
     if (check_ans(Complex.init(-1.0, 1.0), 1.e-14, N, sZ) != 0) {
         fails += 1;
-        std.info.print(">>> FAILED test\n", .{});
+        std.log.info(">>> FAILED test", .{});
     } else {
-        std.info.print("PASSED test\n", .{});
+        std.log.info("PASSED test", .{});
     }
     //
     for (0..N) |i| {
@@ -262,9 +266,9 @@ pub fn main() !void {
     c.N_VLinearSum(-1.0, sX, 2.0, sY, sZ);
     if (check_ans(Complex.init(1.0, -1.0), 1.e-14, N, sZ) != 0) {
         fails += 1;
-        std.info.print(">>> FAILED test\n", .{});
+        std.log.info(">>> FAILED test", .{});
     } else {
-        std.info.print("PASSED test\n", .{});
+        std.log.info("PASSED test", .{});
     }
     //
     for (0..N) |i| {
@@ -279,9 +283,9 @@ pub fn main() !void {
     c.N_VLinearSum(2.0, sX, -1.0, sY, sZ);
     if (check_ans(Complex.init(-1.0, 1.0), 1.e-14, N, sZ) != 0) {
         fails += 1;
-        std.info.print(">>> FAILED test\n", .{});
+        std.log.info(">>> FAILED test", .{});
     } else {
-        std.info.print("PASSED test\n", .{});
+        std.log.info("PASSED test", .{});
     }
     //
     for (0..N) |i| {
@@ -296,9 +300,9 @@ pub fn main() !void {
     c.N_VLinearSum(2.0, sX, 2.0, sY, sZ);
     if (check_ans(Complex.init(1.0, -1.0), 1.e-14, N, sZ) != 0) {
         fails += 1;
-        std.info.print(">>> FAILED test\n", .{});
+        std.log.info(">>> FAILED test", .{});
     } else {
-        std.info.print("PASSED test\n", .{});
+        std.log.info("PASSED test", .{});
     }
     //
     for (0..N) |i| {
@@ -313,9 +317,9 @@ pub fn main() !void {
     c.N_VLinearSum(2.0, sX, -2.0, sY, sZ);
     if (check_ans(Complex.init(-1.0, 1.0), 1.e-14, N, sZ) != 0) {
         fails += 1;
-        std.info.print(">>> FAILED test\n", .{});
+        std.log.info(">>> FAILED test", .{});
     } else {
-        std.info.print("PASSED test\n", .{});
+        std.log.info("PASSED test", .{});
     }
     //
     for (0..N) |i| {
@@ -330,9 +334,9 @@ pub fn main() !void {
     c.N_VLinearSum(2.0, sX, 0.50, sY, sZ);
     if (check_ans(Complex.init(1.0, -1.0), 1.e-14, N, sZ) != 0) {
         fails += 1;
-        std.info.print(">>> FAILED test\n", .{});
+        std.log.info(">>> FAILED test", .{});
     } else {
-        std.info.print("PASSED test\n", .{});
+        std.log.info("PASSED test", .{});
     }
     //
     // ! test FN_VProd
@@ -348,9 +352,9 @@ pub fn main() !void {
     c.N_VProd(sX, sY, sZ);
     if (check_ans(Complex.init(-1.0, 0.0), 1.e-14, N, sZ) != 0) {
         fails += 1;
-        std.info.print(">>> FAILED test\n", .{});
+        std.log.info(">>> FAILED test", .{});
     } else {
-        std.info.print("PASSED test\n", .{});
+        std.log.info("PASSED test", .{});
     }
     //
     for (0..N) |i| {
@@ -365,9 +369,9 @@ pub fn main() !void {
     c.N_VProd(sX, sY, sZ);
     if (check_ans(Complex.init(0.0, -1.0), 1.e-14, N, sZ) != 0) {
         fails += 1;
-        std.info.print(">>> FAILED test\n", .{});
+        std.log.info(">>> FAILED test", .{});
     } else {
-        std.info.print("PASSED test\n", .{});
+        std.log.info("PASSED test", .{});
     }
     //
     for (0..N) |i| {
@@ -382,9 +386,9 @@ pub fn main() !void {
     c.N_VProd(sX, sY, sZ);
     if (check_ans(Complex.init(5.0, 0.0), 1.e-14, N, sZ) != 0) {
         fails += 1;
-        std.info.print(">>> FAILED test\n", .{});
+        std.log.info(">>> FAILED test", .{});
     } else {
-        std.info.print("PASSED test\n", .{});
+        std.log.info("PASSED test", .{});
     }
     //
     // ! test FN_VDiv
@@ -400,9 +404,9 @@ pub fn main() !void {
     c.N_VDiv(sX, sY, sZ);
     if (check_ans(Complex.init(0.50, 0.0), 1.e-14, N, sZ) != 0) {
         fails += 1;
-        std.info.print(">>> FAILED test\n", .{});
+        std.log.info(">>> FAILED test", .{});
     } else {
-        std.info.print("PASSED test\n", .{});
+        std.log.info("PASSED test", .{});
     }
     //
     for (0..N) |i| {
@@ -417,9 +421,9 @@ pub fn main() !void {
     c.N_VDiv(sX, sY, sZ);
     if (check_ans(Complex.init(0.0, 0.50), 1.e-14, N, sZ) != 0) {
         fails += 1;
-        std.info.print(">>> FAILED test\n", .{});
+        std.log.info(">>> FAILED test", .{});
     } else {
-        std.info.print("PASSED test\n", .{});
+        std.log.info("PASSED test", .{});
     }
     //
     for (0..N) |i| {
@@ -434,9 +438,9 @@ pub fn main() !void {
     c.N_VDiv(sX, sY, sZ);
     if (check_ans(Complex.init(1.0, 3.0), 1.e-14, N, sZ) != 0) {
         fails += 1;
-        std.info.print(">>> FAILED test\n", .{});
+        std.log.info(">>> FAILED test", .{});
     } else {
-        std.info.print("PASSED test\n", .{});
+        std.log.info("PASSED test", .{});
     }
     //
     // ! test FN_VScale
@@ -446,9 +450,9 @@ pub fn main() !void {
     c.N_VScale(2.0, sX, sX);
     if (check_ans(Complex.init(1.0, -1.0), 1.e-14, N, sX) != 0) {
         fails += 1;
-        std.info.print(">>> FAILED test\n", .{});
+        std.log.info(">>> FAILED test", .{});
     } else {
-        std.info.print("PASSED test\n", .{});
+        std.log.info("PASSED test", .{});
     }
     //
     for (0..N) |i| {
@@ -460,9 +464,9 @@ pub fn main() !void {
     c.N_VScale(1.0, sX, sZ);
     if (check_ans(Complex.init(-1.0, 1.0), 1.e-14, N, sZ) != 0) {
         fails += 1;
-        std.info.print(">>> FAILED test\n", .{});
+        std.log.info(">>> FAILED test", .{});
     } else {
-        std.info.print("PASSED test\n", .{});
+        std.log.info("PASSED test", .{});
     }
     //
     for (0..N) |i| {
@@ -474,9 +478,9 @@ pub fn main() !void {
     c.N_VScale(-1.0, sX, sZ);
     if (check_ans(Complex.init(1.0, -1.0), 1.e-14, N, sZ) != 0) {
         fails += 1;
-        std.info.print(">>> FAILED test\n", .{});
+        std.log.info(">>> FAILED test", .{});
     } else {
-        std.info.print("PASSED test\n", .{});
+        std.log.info("PASSED test", .{});
     }
     //
     for (0..N) |i| {
@@ -488,9 +492,9 @@ pub fn main() !void {
     c.N_VScale(2.0, sX, sZ);
     if (check_ans(Complex.init(-1.0, 1.0), 1.e-14, N, sZ) != 0) {
         fails += 1;
-        std.info.print(">>> FAILED test\n", .{});
+        std.log.info(">>> FAILED test", .{});
     } else {
-        std.info.print("PASSED test\n", .{});
+        std.log.info("PASSED test", .{});
     }
     //
     // ! test FN_VAbs
@@ -503,9 +507,9 @@ pub fn main() !void {
     c.N_VAbs(sX, sZ);
     if (check_ans(Complex.init(1.0, 0.0), 1.e-14, N, sZ) != 0) {
         fails += 1;
-        std.info.print(">>> FAILED test\n", .{});
+        std.log.info(">>> FAILED test", .{});
     } else {
-        std.info.print("PASSED test\n", .{});
+        std.log.info("PASSED test", .{});
     }
     //
     for (0..N) |i| {
@@ -517,9 +521,9 @@ pub fn main() !void {
     c.N_VAbs(sX, sZ);
     if (check_ans(Complex.init(1.0, 0.0), 1.e-14, N, sZ) != 0) {
         fails += 1;
-        std.info.print(">>> FAILED test\n", .{});
+        std.log.info(">>> FAILED test", .{});
     } else {
-        std.info.print("PASSED test\n", .{});
+        std.log.info("PASSED test", .{});
     }
     //
     for (0..N) |i| {
@@ -531,9 +535,9 @@ pub fn main() !void {
     c.N_VAbs(sX, sZ);
     if (check_ans(Complex.init(5.0, 0.0), 1.e-14, N, sZ) != 0) {
         fails += 1;
-        std.info.print(">>> FAILED test\n", .{});
+        std.log.info(">>> FAILED test", .{});
     } else {
-        std.info.print("PASSED test\n", .{});
+        std.log.info("PASSED test", .{});
     }
     //
     // ! test FN_VInv
@@ -546,9 +550,9 @@ pub fn main() !void {
     c.N_VInv(sX, sZ);
     if (check_ans(Complex.init(0.50, 0.0), 1.e-14, N, sZ) != 0) {
         fails += 1;
-        std.info.print(">>> FAILED test\n", .{});
+        std.log.info(">>> FAILED test", .{});
     } else {
-        std.info.print("PASSED test\n", .{});
+        std.log.info("PASSED test", .{});
     }
     //
     for (0..N) |i| {
@@ -560,9 +564,9 @@ pub fn main() !void {
     c.N_VInv(sX, sZ);
     if (check_ans(Complex.init(0.0, -1.0), 1.e-14, N, sZ) != 0) {
         fails += 1;
-        std.info.print(">>> FAILED test\n", .{});
+        std.log.info(">>> FAILED test", .{});
     } else {
-        std.info.print("PASSED test\n", .{});
+        std.log.info("PASSED test", .{});
     }
     //
     // ! test FN_VAddConst
@@ -575,14 +579,24 @@ pub fn main() !void {
     c.N_VAddConst(sX, -2.0, sZ);
     if (check_ans(Complex.init(-1.0, 1.0), 1.e-14, N, sZ) != 0) {
         fails += 1;
-        std.info.print(">>> FAILED test\n", .{});
+        std.log.info(">>> FAILED test", .{});
     } else {
-        std.info.print("PASSED test\n", .{});
+        std.log.info("PASSED test", .{});
     }
     //
     if (fails > 0) {
-        std.info.print("FAILURES: {}\n", .{fails});
+        std.log.info("FAILURES: {}", .{fails});
+        return error.TestFailures;
     } else {
-        std.info.print("ALL TESTS PASSED\n", .{});
+        std.log.info("ALL TESTS PASSED", .{});
     }
+}
+
+pub fn main() !void {
+    try runAllChecks();
+}
+
+test "nvector_complex checks" {
+    std.testing.log_level = .info;
+    try runAllChecks();
 }
