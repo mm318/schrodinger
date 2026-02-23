@@ -9,6 +9,9 @@ pub const c = @cImport({
     @cInclude("arkode/arkode_arkstep.h");
 });
 
+const VtuWriter = @import("vtu_writer");
+
+
 inline fn asNVector(v: nv.N_Vector) c.N_Vector {
     return @ptrCast(v);
 }
@@ -56,6 +59,98 @@ const Diagnostics = struct {
 inline fn idx(ix: usize, iy: usize) usize {
     return iy * Nx + ix;
 }
+
+const Plotter = struct {
+    allocator: std.mem.Allocator,
+    mesh_builder: VtuWriter.UnstructuredMeshBuilder,
+    real_data: []f64,
+    imag_data: []f64,
+    prob_data: []f64,
+    series_file: ?std.fs.File = null,
+    num_plotted: usize = 0,
+
+    fn init(allocator: std.mem.Allocator) !Plotter {
+        var self = Plotter{
+            .allocator = allocator,
+            .mesh_builder = VtuWriter.UnstructuredMeshBuilder.init(allocator),
+            .real_data = try allocator.alloc(f64, neq),
+            .imag_data = try allocator.alloc(f64, neq),
+            .prob_data = try allocator.alloc(f64, neq),
+        };
+
+        try self.mesh_builder.reservePoints(neq);
+        try self.mesh_builder.reserveCells(.VTK_QUAD, (Nx - 1) * (Ny - 1));
+
+        for (0..Ny) |iy| {
+            const ycoord = (@as(f64, @floatFromInt(iy)) + 0.5) * dy;
+            for (0..Nx) |ix| {
+                const xcoord = (@as(f64, @floatFromInt(ix)) + 0.5) * dx;
+                _ = try self.mesh_builder.addPoint(.{ xcoord, ycoord, 0.0 });
+            }
+        }
+
+        for (0..Ny - 1) |iy| {
+            for (0..Nx - 1) |ix| {
+                try self.mesh_builder.addCell(.VTK_QUAD, .{
+                    @intCast(idx(ix, iy)),
+                    @intCast(idx(ix + 1, iy)),
+                    @intCast(idx(ix + 1, iy + 1)),
+                    @intCast(idx(ix, iy + 1)),
+                });
+            }
+        }
+
+        return self;
+    }
+
+    fn startSeries(self: *Plotter) !void {
+        self.series_file = try std.fs.cwd().createFile("schrodinger2d.vtu.series", .{});
+        try self.series_file.?.writeAll("{\n  \"file-series-version\" : \"1.0\",\n  \"files\" : [\n");
+    }
+
+    fn plot(self: *Plotter, y: *const nvector_complex.CVec, t: f64, filename: []const u8) !void {
+        for (0..neq) |i| {
+            const psi = y.data[i];
+            self.real_data[i] = psi.re;
+            self.imag_data[i] = psi.im;
+            self.prob_data[i] = psi.re * psi.re + psi.im * psi.im;
+        }
+
+        const mesh = self.mesh_builder.getUnstructuredMesh();
+        const data_sets = [_]VtuWriter.DataSet{
+            .{ "psi_real", VtuWriter.DataSetType.PointData, 1, self.real_data },
+            .{ "psi_imag", VtuWriter.DataSetType.PointData, 1, self.imag_data },
+            .{ "probability_density", VtuWriter.DataSetType.PointData, 1, self.prob_data },
+        };
+
+        try VtuWriter.writeVtu(self.allocator, filename, mesh, &data_sets, .rawbinarycompressed);
+        if (self.series_file) |file| {
+            if (self.num_plotted > 0) {
+                try file.writeAll(",\n");
+            }
+            var line_buf: [256]u8 = undefined;
+            const line = try std.fmt.bufPrint(
+                &line_buf,
+                "    {{ \"name\" : \"{s}\", \"time\" : {d:.9} }}",
+                .{ filename, t },
+            );
+            try file.writeAll(line);
+        }
+        self.num_plotted += 1;
+    }
+
+    fn deinit(self: *Plotter) void {
+        self.mesh_builder.deinit();
+        self.allocator.free(self.real_data);
+        self.allocator.free(self.imag_data);
+        self.allocator.free(self.prob_data);
+
+        if (self.series_file) |file| {
+            file.writeAll("\n  ]\n}\n") catch {};
+            file.close();
+        }
+    }
+};
 
 fn normalizeWavefunction(y: *nvector_complex.CVec) void {
     var sum_prob: f64 = 0.0;
@@ -182,6 +277,8 @@ fn ARKStepStats(arkode_mem: *anyopaque) void {
 }
 
 pub fn main() !void {
+    const allocator = std.heap.c_allocator;
+
     var sunctx: c.SUNContext = null;
     if (c.SUNContext_Create(c.SUN_COMM_NULL, &sunctx) != 0) {
         std.debug.print("ERROR: SUNContext_Create failed\n", .{});
@@ -200,6 +297,10 @@ pub fn main() !void {
     const y = nvector_complex.N_VGetCVec(sunvec_y);
 
     initializeWavefunction(y);
+
+    var plotter = try Plotter.init(allocator);
+    defer plotter.deinit();
+    try plotter.startSeries();
 
     var arkode_mem: ?*anyopaque = c.ARKStepCreate(Rhs, null, T0, asNVector(sunvec_y), sunctx) orelse {
         std.debug.print("ERROR: arkode_mem = NULL\n", .{});
@@ -221,6 +322,7 @@ pub fn main() !void {
 
     var tout = T0 + dTout;
     var diagnostics = computeDiagnostics(y);
+    var filename_buf: [256]u8 = undefined;
 
     std.debug.print("\n step        t          norm       x_mean     y_mean    peak|psi|\n", .{});
     std.debug.print("--------------------------------------------------------------------\n", .{});
@@ -232,6 +334,9 @@ pub fn main() !void {
         diagnostics.y_mean,
         diagnostics.peak_amp,
     });
+
+    var filename = try std.fmt.bufPrint(&filename_buf, "schrodinger2d_t{d:0>10.6}.vtu", .{tcur});
+    try plotter.plot(y, tcur, filename);
 
     for (1..Nt + 1) |step| {
         const ierr = c.ARKodeEvolve(arkode_mem.?, tout, asNVector(sunvec_y), &tcur, c.ARK_NORMAL);
@@ -250,12 +355,16 @@ pub fn main() !void {
             diagnostics.peak_amp,
         });
 
+        filename = try std.fmt.bufPrint(&filename_buf, "schrodinger2d_t{d:0>10.6}.vtu", .{tcur});
+        try plotter.plot(y, tcur, filename);
+
         tout = @min(tout + dTout, Tf);
     }
 
     std.debug.print("--------------------------------------------------------------------\n", .{});
 
     ARKStepStats(arkode_mem.?);
+    std.debug.print("Wrote {} VTU files and schrodinger2d.vtu.series\n", .{plotter.num_plotted});
     std.debug.print("Final packet center: ({d:.6}, {d:.6}), norm = {d:.6}\n\n", .{
         diagnostics.x_mean,
         diagnostics.y_mean,
