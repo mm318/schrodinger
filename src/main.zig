@@ -24,11 +24,14 @@ inline fn asComplexSunContext(ctx: c.SUNContext) nv.SUNContext {
     return @ptrCast(ctx);
 }
 
+// Grid and simulation size. Odd dimensions keep a cell center exactly at (0.5, 0.5, 0.5).
 const Nx: usize = 101;
 const Ny: usize = 101;
 const Nz: usize = 101;
 const neq: usize = Nx * Ny * Nz;
 const Nt: usize = 100;
+
+// Domain and initial Gaussian packet parameters.
 const domain_length: f64 = 1.0;
 const packet_radius: f64 = 0.1;
 const packet_x0: f64 = 0.2;
@@ -37,18 +40,23 @@ const packet_z0: f64 = 0.5;
 const packet_kx: f64 = 157.0;
 const packet_ky: f64 = 0.0;
 const packet_kz: f64 = 0.0;
+
+// Central inverse-square potential: V(r) = -k/r^2 around (0.5, 0.5, 0.5).
 const potential_center_x: f64 = 0.5;
 const potential_center_y: f64 = 0.5;
 const potential_center_z: f64 = 0.5;
 const potential_reference_radius: f64 = 0.25;
 const potential_reference_abs: f64 = 5.0e2;
 const center_potential_abs: f64 = 1.6666666666666667e5;
+
+// Time integration controls.
 const T0: f64 = 0.0;
 const Tf: f64 = 0.006;
 const reltol: f64 = 1.0e-6;
 const abstol: f64 = 1.0e-9;
 const internal_substeps: usize = 10;
 
+// Derived spatial factors and complex constants used in the RHS stencil.
 const dx = domain_length / @as(f64, @floatFromInt(Nx));
 const dy = domain_length / @as(f64, @floatFromInt(Ny));
 const dz = domain_length / @as(f64, @floatFromInt(Nz));
@@ -61,6 +69,8 @@ const i_half = Complex.init(0.0, 0.5);
 const inv_dx2_c = Complex.init(inv_dx2, 0.0);
 const inv_dy2_c = Complex.init(inv_dy2, 0.0);
 const inv_dz2_c = Complex.init(inv_dz2, 0.0);
+
+// k is set so V(r=0.25) = -500. The singularity is clamped so V_min = -center_potential_abs.
 const potential_k = potential_reference_abs * potential_reference_radius * potential_reference_radius;
 const singularity_radius = @sqrt(potential_k / center_potential_abs);
 const singularity_radius2 = singularity_radius * singularity_radius;
