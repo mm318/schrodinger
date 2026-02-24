@@ -26,19 +26,23 @@ inline fn asComplexSunContext(ctx: c.SUNContext) nv.SUNContext {
 
 const Nx: usize = 100;
 const Ny: usize = 100;
-const neq: usize = Nx * Ny;
+const Nz: usize = 100;
+const neq: usize = Nx * Ny * Nz;
 const Nt: usize = 100;
 const domain_length: f64 = 1.0;
 const packet_radius: f64 = 0.1;
 const packet_x0: f64 = 0.2;
 const packet_y0: f64 = 0.5;
+const packet_z0: f64 = 0.5;
 const packet_kx: f64 = 157.0;
 const packet_ky: f64 = 0.0;
-const wall_x_center: f64 = 0.5;
-const wall_thickness: f64 = 0.02;
-const slit_width: f64 = 0.08;
-const slit_gap_edge_to_edge: f64 = 0.02;
-const wall_potential: f64 = 1.0e5;
+const packet_kz: f64 = 0.0;
+const potential_center_x: f64 = 0.5;
+const potential_center_y: f64 = 0.5;
+const potential_center_z: f64 = 0.5;
+const potential_reference_radius: f64 = 0.25;
+const potential_reference_magnitude: f64 = 1.0e-3;
+const singularity_radius: f64 = 1.0e-6;
 const T0: f64 = 0.0;
 const Tf: f64 = 0.006;
 const reltol: f64 = 1.0e-6;
@@ -47,43 +51,41 @@ const internal_substeps: usize = 10;
 
 const dx = domain_length / @as(f64, @floatFromInt(Nx));
 const dy = domain_length / @as(f64, @floatFromInt(Ny));
+const dz = domain_length / @as(f64, @floatFromInt(Nz));
 const inv_dx2 = 1.0 / (dx * dx);
 const inv_dy2 = 1.0 / (dy * dy);
-const cell_area = dx * dy;
+const inv_dz2 = 1.0 / (dz * dz);
+const cell_volume = dx * dy * dz;
 const two = Complex.init(2.0, 0.0);
 const i_half = Complex.init(0.0, 0.5);
 const inv_dx2_c = Complex.init(inv_dx2, 0.0);
 const inv_dy2_c = Complex.init(inv_dy2, 0.0);
-const wall_x_min = wall_x_center - 0.5 * wall_thickness;
-const wall_x_max = wall_x_center + 0.5 * wall_thickness;
-const lower_slit_y_max = 0.5 - 0.5 * slit_gap_edge_to_edge;
-const lower_slit_y_min = lower_slit_y_max - slit_width;
-const upper_slit_y_min = 0.5 + 0.5 * slit_gap_edge_to_edge;
-const upper_slit_y_max = upper_slit_y_min + slit_width;
+const inv_dz2_c = Complex.init(inv_dz2, 0.0);
+const singularity_radius2 = singularity_radius * singularity_radius;
+const potential_k = potential_reference_magnitude * potential_reference_radius * potential_reference_radius;
 
 const Diagnostics = struct {
     norm: f64,
     x_mean: f64,
     y_mean: f64,
+    z_mean: f64,
     sigma_x: f64,
     sigma_y: f64,
+    sigma_z: f64,
     peak_amp: f64,
 };
 
-inline fn idx(ix: usize, iy: usize) usize {
-    return iy * Nx + ix;
+inline fn idx(ix: usize, iy: usize, iz: usize) usize {
+    return (iz * Ny + iy) * Nx + ix;
 }
 
-inline fn isInSlit(ycoord: f64) bool {
-    const in_lower = (ycoord >= lower_slit_y_min) and (ycoord <= lower_slit_y_max);
-    const in_upper = (ycoord >= upper_slit_y_min) and (ycoord <= upper_slit_y_max);
-    return in_lower or in_upper;
-}
-
-fn potentialAt(xcoord: f64, ycoord: f64) f64 {
-    if ((xcoord < wall_x_min) or (xcoord > wall_x_max)) return 0.0;
-    if (isInSlit(ycoord)) return 0.0;
-    return wall_potential;
+fn potentialAt(xcoord: f64, ycoord: f64, zcoord: f64) f64 {
+    const rx = xcoord - potential_center_x;
+    const ry = ycoord - potential_center_y;
+    const rz = zcoord - potential_center_z;
+    const r2 = rx * rx + ry * ry + rz * rz;
+    const safe_r2 = @max(r2, singularity_radius2);
+    return -potential_k / safe_r2;
 }
 
 const Plotter = struct {
@@ -107,25 +109,34 @@ const Plotter = struct {
         };
 
         try self.mesh_builder.reservePoints(neq);
-        try self.mesh_builder.reserveCells(.VTK_QUAD, (Nx - 1) * (Ny - 1));
+        try self.mesh_builder.reserveCells(.VTK_VOXEL, (Nx - 1) * (Ny - 1) * (Nz - 1));
 
-        for (0..Ny) |iy| {
-            const ycoord = (@as(f64, @floatFromInt(iy)) + 0.5) * dy;
-            for (0..Nx) |ix| {
-                const xcoord = (@as(f64, @floatFromInt(ix)) + 0.5) * dx;
-                _ = try self.mesh_builder.addPoint(.{ xcoord, ycoord, 0.0 });
-                self.potential_data[idx(ix, iy)] = potentialAt(xcoord, ycoord);
+        for (0..Nz) |iz| {
+            const zcoord = (@as(f64, @floatFromInt(iz)) + 0.5) * dz;
+            for (0..Ny) |iy| {
+                const ycoord = (@as(f64, @floatFromInt(iy)) + 0.5) * dy;
+                for (0..Nx) |ix| {
+                    const xcoord = (@as(f64, @floatFromInt(ix)) + 0.5) * dx;
+                    _ = try self.mesh_builder.addPoint(.{ xcoord, ycoord, zcoord });
+                    self.potential_data[idx(ix, iy, iz)] = potentialAt(xcoord, ycoord, zcoord);
+                }
             }
         }
 
-        for (0..Ny - 1) |iy| {
-            for (0..Nx - 1) |ix| {
-                try self.mesh_builder.addCell(.VTK_QUAD, .{
-                    @intCast(idx(ix, iy)),
-                    @intCast(idx(ix + 1, iy)),
-                    @intCast(idx(ix + 1, iy + 1)),
-                    @intCast(idx(ix, iy + 1)),
-                });
+        for (0..Nz - 1) |iz| {
+            for (0..Ny - 1) |iy| {
+                for (0..Nx - 1) |ix| {
+                    try self.mesh_builder.addCell(.VTK_VOXEL, .{
+                        @intCast(idx(ix, iy, iz)),
+                        @intCast(idx(ix + 1, iy, iz)),
+                        @intCast(idx(ix, iy + 1, iz)),
+                        @intCast(idx(ix + 1, iy + 1, iz)),
+                        @intCast(idx(ix, iy, iz + 1)),
+                        @intCast(idx(ix + 1, iy, iz + 1)),
+                        @intCast(idx(ix, iy + 1, iz + 1)),
+                        @intCast(idx(ix + 1, iy + 1, iz + 1)),
+                    });
+                }
             }
         }
 
@@ -133,7 +144,7 @@ const Plotter = struct {
     }
 
     fn startSeries(self: *Plotter) !void {
-        self.series_file = try std.fs.cwd().createFile("schrodinger2d.vtu.series", .{});
+        self.series_file = try std.fs.cwd().createFile("schrodinger3d.vtu.series", .{});
         try self.series_file.?.writeAll("{\n  \"file-series-version\" : \"1.0\",\n  \"files\" : [\n");
     }
 
@@ -190,7 +201,7 @@ fn normalizeWavefunction(y: *nvector_complex.CVec) void {
         sum_prob += psi.re * psi.re + psi.im * psi.im;
     }
 
-    const norm = sum_prob * cell_area;
+    const norm = sum_prob * cell_volume;
     if (norm == 0.0) return;
 
     const scale = 1.0 / @sqrt(norm);
@@ -202,19 +213,23 @@ fn normalizeWavefunction(y: *nvector_complex.CVec) void {
 
 fn initializeWavefunction(y: *nvector_complex.CVec) void {
     const sigma2 = packet_radius * packet_radius;
-    for (0..Ny) |iy| {
-        const ycoord = (@as(f64, @floatFromInt(iy)) + 0.5) * dy;
-        for (0..Nx) |ix| {
-            const xcoord = (@as(f64, @floatFromInt(ix)) + 0.5) * dx;
-            const rx = xcoord - packet_x0;
-            const ry = ycoord - packet_y0;
-            const r2 = rx * rx + ry * ry;
-            const envelope = @exp(-r2 / (2.0 * sigma2));
-            const phase = packet_kx * xcoord + packet_ky * ycoord;
-            y.data[idx(ix, iy)] = Complex.init(
-                envelope * @cos(phase),
-                envelope * @sin(phase),
-            );
+    for (0..Nz) |iz| {
+        const zcoord = (@as(f64, @floatFromInt(iz)) + 0.5) * dz;
+        for (0..Ny) |iy| {
+            const ycoord = (@as(f64, @floatFromInt(iy)) + 0.5) * dy;
+            for (0..Nx) |ix| {
+                const xcoord = (@as(f64, @floatFromInt(ix)) + 0.5) * dx;
+                const rx = xcoord - packet_x0;
+                const ry = ycoord - packet_y0;
+                const rz = zcoord - packet_z0;
+                const r2 = rx * rx + ry * ry + rz * rz;
+                const envelope = @exp(-r2 / (2.0 * sigma2));
+                const phase = packet_kx * xcoord + packet_ky * ycoord + packet_kz * zcoord;
+                y.data[idx(ix, iy, iz)] = Complex.init(
+                    envelope * @cos(phase),
+                    envelope * @sin(phase),
+                );
+            }
         }
     }
 
@@ -225,24 +240,31 @@ fn computeDiagnostics(y: *nvector_complex.CVec) Diagnostics {
     var sum_prob: f64 = 0.0;
     var sum_xprob: f64 = 0.0;
     var sum_yprob: f64 = 0.0;
+    var sum_zprob: f64 = 0.0;
     var sum_x2prob: f64 = 0.0;
     var sum_y2prob: f64 = 0.0;
+    var sum_z2prob: f64 = 0.0;
     var peak_amp: f64 = 0.0;
 
-    for (0..Ny) |iy| {
-        const ycoord = (@as(f64, @floatFromInt(iy)) + 0.5) * dy;
-        for (0..Nx) |ix| {
-            const xcoord = (@as(f64, @floatFromInt(ix)) + 0.5) * dx;
-            const psi = y.data[idx(ix, iy)];
-            const prob = psi.re * psi.re + psi.im * psi.im;
-            const amp = @sqrt(prob);
+    for (0..Nz) |iz| {
+        const zcoord = (@as(f64, @floatFromInt(iz)) + 0.5) * dz;
+        for (0..Ny) |iy| {
+            const ycoord = (@as(f64, @floatFromInt(iy)) + 0.5) * dy;
+            for (0..Nx) |ix| {
+                const xcoord = (@as(f64, @floatFromInt(ix)) + 0.5) * dx;
+                const psi = y.data[idx(ix, iy, iz)];
+                const prob = psi.re * psi.re + psi.im * psi.im;
+                const amp = @sqrt(prob);
 
-            sum_prob += prob;
-            sum_xprob += xcoord * prob;
-            sum_yprob += ycoord * prob;
-            sum_x2prob += xcoord * xcoord * prob;
-            sum_y2prob += ycoord * ycoord * prob;
-            if (amp > peak_amp) peak_amp = amp;
+                sum_prob += prob;
+                sum_xprob += xcoord * prob;
+                sum_yprob += ycoord * prob;
+                sum_zprob += zcoord * prob;
+                sum_x2prob += xcoord * xcoord * prob;
+                sum_y2prob += ycoord * ycoord * prob;
+                sum_z2prob += zcoord * zcoord * prob;
+                if (amp > peak_amp) peak_amp = amp;
+            }
         }
     }
 
@@ -251,23 +273,29 @@ fn computeDiagnostics(y: *nvector_complex.CVec) Diagnostics {
             .norm = 0.0,
             .x_mean = 0.0,
             .y_mean = 0.0,
+            .z_mean = 0.0,
             .sigma_x = 0.0,
             .sigma_y = 0.0,
+            .sigma_z = 0.0,
             .peak_amp = peak_amp,
         };
     }
 
     const x_mean = sum_xprob / sum_prob;
     const y_mean = sum_yprob / sum_prob;
+    const z_mean = sum_zprob / sum_prob;
     const var_x = @max(0.0, sum_x2prob / sum_prob - x_mean * x_mean);
     const var_y = @max(0.0, sum_y2prob / sum_prob - y_mean * y_mean);
+    const var_z = @max(0.0, sum_z2prob / sum_prob - z_mean * z_mean);
 
     return .{
-        .norm = sum_prob * cell_area,
+        .norm = sum_prob * cell_volume,
         .x_mean = x_mean,
         .y_mean = y_mean,
+        .z_mean = z_mean,
         .sigma_x = @sqrt(var_x),
         .sigma_y = @sqrt(var_y),
+        .sigma_z = @sqrt(var_z),
         .peak_amp = peak_amp,
     };
 }
@@ -278,30 +306,39 @@ export fn Rhs(tn: c.sunrealtype, sunvec_y: c.N_Vector, sunvec_f: c.N_Vector, use
     const y = nvector_complex.N_VGetCVec(asComplexNVector(sunvec_y));
     const f = nvector_complex.N_VGetCVec(asComplexNVector(sunvec_f));
 
-    for (0..Ny) |iy| {
-        const ycoord = (@as(f64, @floatFromInt(iy)) + 0.5) * dy;
-        const iy_d = if (iy == 0) Ny - 1 else iy - 1;
-        const iy_u = if (iy + 1 == Ny) 0 else iy + 1;
-        for (0..Nx) |ix| {
-            const xcoord = (@as(f64, @floatFromInt(ix)) + 0.5) * dx;
-            const ix_l = if (ix == 0) Nx - 1 else ix - 1;
-            const ix_r = if (ix + 1 == Nx) 0 else ix + 1;
+    for (0..Nz) |iz| {
+        const zcoord = (@as(f64, @floatFromInt(iz)) + 0.5) * dz;
+        const iz_b = if (iz == 0) Nz - 1 else iz - 1;
+        const iz_f = if (iz + 1 == Nz) 0 else iz + 1;
+        for (0..Ny) |iy| {
+            const ycoord = (@as(f64, @floatFromInt(iy)) + 0.5) * dy;
+            const iy_d = if (iy == 0) Ny - 1 else iy - 1;
+            const iy_u = if (iy + 1 == Ny) 0 else iy + 1;
+            for (0..Nx) |ix| {
+                const xcoord = (@as(f64, @floatFromInt(ix)) + 0.5) * dx;
+                const ix_l = if (ix == 0) Nx - 1 else ix - 1;
+                const ix_r = if (ix + 1 == Nx) 0 else ix + 1;
 
-            const center_id = idx(ix, iy);
-            const center = y.data[center_id];
+                const center_id = idx(ix, iy, iz);
+                const center = y.data[center_id];
 
-            const lap_x = y.data[idx(ix_r, iy)]
-                .add(y.data[idx(ix_l, iy)])
-                .sub(center.mul(two))
-                .mul(inv_dx2_c);
-            const lap_y = y.data[idx(ix, iy_u)]
-                .add(y.data[idx(ix, iy_d)])
-                .sub(center.mul(two))
-                .mul(inv_dy2_c);
+                const lap_x = y.data[idx(ix_r, iy, iz)]
+                    .add(y.data[idx(ix_l, iy, iz)])
+                    .sub(center.mul(two))
+                    .mul(inv_dx2_c);
+                const lap_y = y.data[idx(ix, iy_u, iz)]
+                    .add(y.data[idx(ix, iy_d, iz)])
+                    .sub(center.mul(two))
+                    .mul(inv_dy2_c);
+                const lap_z = y.data[idx(ix, iy, iz_f)]
+                    .add(y.data[idx(ix, iy, iz_b)])
+                    .sub(center.mul(two))
+                    .mul(inv_dz2_c);
 
-            const v = potentialAt(xcoord, ycoord);
-            const potential_term = center.mul(Complex.init(0.0, -v));
-            f.data[center_id] = lap_x.add(lap_y).mul(i_half).add(potential_term);
+                const v = potentialAt(xcoord, ycoord, zcoord);
+                const potential_term = center.mul(Complex.init(0.0, -v));
+                f.data[center_id] = lap_x.add(lap_y).add(lap_z).mul(i_half).add(potential_term);
+            }
         }
     }
     return 0;
@@ -334,16 +371,28 @@ pub fn main() !void {
     }
     defer _ = c.SUNContext_Free(&sunctx);
 
-    std.debug.print("\n2D Schrödinger simulation on a unit square:\n", .{});
-    std.debug.print("    grid = {} x {}, timesteps = {}\n", .{ Nx, Ny, Nt });
-    std.debug.print("    packet radius = {d:.3}, center = ({d:.3}, {d:.3})\n", .{ packet_radius, packet_x0, packet_y0 });
-    std.debug.print("    packet wavevector = ({d:.3}, {d:.3})\n", .{ packet_kx, packet_ky });
-    std.debug.print("    double-slit wall: x = {d:.3} +/- {d:.3}, V0 = {e}\n", .{ wall_x_center, 0.5 * wall_thickness, wall_potential });
-    std.debug.print("    slit y-ranges: [{d:.3}, {d:.3}] and [{d:.3}, {d:.3}]\n", .{
-        lower_slit_y_min,
-        lower_slit_y_max,
-        upper_slit_y_min,
-        upper_slit_y_max,
+    std.debug.print("\n3D Schrödinger simulation on a unit cube:\n", .{});
+    std.debug.print("    grid = {} x {} x {}, timesteps = {}\n", .{ Nx, Ny, Nz, Nt });
+    std.debug.print("    packet radius = {d:.3}, center = ({d:.3}, {d:.3}, {d:.3})\n", .{
+        packet_radius,
+        packet_x0,
+        packet_y0,
+        packet_z0,
+    });
+    std.debug.print("    packet wavevector = ({d:.3}, {d:.3}, {d:.3})\n", .{
+        packet_kx,
+        packet_ky,
+        packet_kz,
+    });
+    std.debug.print("    potential: V(x,y,z) = -k/r^2, center = ({d:.3}, {d:.3}, {d:.3})\n", .{
+        potential_center_x,
+        potential_center_y,
+        potential_center_z,
+    });
+    std.debug.print("    k = {e:.6}, V(r=0.25) = {e:.6}, singularity clamp radius = {e:.6}\n", .{
+        potential_k,
+        -potential_k / (potential_reference_radius * potential_reference_radius),
+        singularity_radius,
     });
     std.debug.print("    ARKODE method = implicit midpoint (DIRK), reltol = {e}, abstol = {e}\n", .{ reltol, abstol });
     std.debug.print("    internal fixed substeps per output step = {}\n", .{internal_substeps});
@@ -401,20 +450,22 @@ pub fn main() !void {
     var diagnostics = computeDiagnostics(y);
     var filename_buf: [256]u8 = undefined;
 
-    std.debug.print("\n step        t            norm         x_mean     y_mean    sigma_x   sigma_y   peak|psi|\n", .{});
-    std.debug.print("--------------------------------------------------------------------------------------------\n", .{});
-    std.debug.print(" {:>4}  {d:.6}  {d:.10}  {d:.6}  {d:.6}  {d:.6}  {d:.6}  {d:.6}\n", .{
+    std.debug.print("\n step        t            norm         x_mean     y_mean     z_mean    sigma_x   sigma_y   sigma_z   peak|psi|\n", .{});
+    std.debug.print("-----------------------------------------------------------------------------------------------------------------\n", .{});
+    std.debug.print(" {:>4}  {d:.6}  {d:.10}  {d:.6}  {d:.6}  {d:.6}  {d:.6}  {d:.6}  {d:.6}  {d:.6}\n", .{
         0,
         tcur,
         diagnostics.norm,
         diagnostics.x_mean,
         diagnostics.y_mean,
+        diagnostics.z_mean,
         diagnostics.sigma_x,
         diagnostics.sigma_y,
+        diagnostics.sigma_z,
         diagnostics.peak_amp,
     });
 
-    var filename = try std.fmt.bufPrint(&filename_buf, "schrodinger2d_t{d:0>4}.vtu", .{0});
+    var filename = try std.fmt.bufPrint(&filename_buf, "schrodinger3d_t{d:0>4}.vtu", .{0});
     try plotter.plot(y, tcur, filename);
 
     for (1..Nt + 1) |step| {
@@ -425,29 +476,32 @@ pub fn main() !void {
         }
 
         diagnostics = computeDiagnostics(y);
-        std.debug.print(" {:>4}  {d:.6}  {d:.10}  {d:.6}  {d:.6}  {d:.6}  {d:.6}  {d:.6}\n", .{
+        std.debug.print(" {:>4}  {d:.6}  {d:.10}  {d:.6}  {d:.6}  {d:.6}  {d:.6}  {d:.6}  {d:.6}  {d:.6}\n", .{
             step,
             tcur,
             diagnostics.norm,
             diagnostics.x_mean,
             diagnostics.y_mean,
+            diagnostics.z_mean,
             diagnostics.sigma_x,
             diagnostics.sigma_y,
+            diagnostics.sigma_z,
             diagnostics.peak_amp,
         });
 
-        filename = try std.fmt.bufPrint(&filename_buf, "schrodinger2d_t{d:0>4}.vtu", .{step});
+        filename = try std.fmt.bufPrint(&filename_buf, "schrodinger3d_t{d:0>4}.vtu", .{step});
         try plotter.plot(y, tcur, filename);
 
         tout = @min(tout + dTout, Tf);
     }
 
-    std.debug.print("--------------------------------------------------------------------------------------------\n", .{});
+    std.debug.print("-----------------------------------------------------------------------------------------------------------------\n", .{});
     ARKStepStats(arkode_mem.?);
-    std.debug.print("Wrote {} VTU files and schrodinger2d.vtu.series\n", .{plotter.num_plotted});
-    std.debug.print("Final packet center: ({d:.6}, {d:.6}), norm = {d:.6}\n\n", .{
+    std.debug.print("Wrote {} VTU files and schrodinger3d.vtu.series\n", .{plotter.num_plotted});
+    std.debug.print("Final packet center: ({d:.6}, {d:.6}, {d:.6}), norm = {d:.6}\n\n", .{
         diagnostics.x_mean,
         diagnostics.y_mean,
+        diagnostics.z_mean,
         diagnostics.norm,
     });
 }
