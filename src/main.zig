@@ -24,9 +24,9 @@ inline fn asComplexSunContext(ctx: c.SUNContext) nv.SUNContext {
     return @ptrCast(ctx);
 }
 
-const Nx: usize = 100;
-const Ny: usize = 100;
-const Nz: usize = 100;
+const Nx: usize = 101;
+const Ny: usize = 101;
+const Nz: usize = 101;
 const neq: usize = Nx * Ny * Nz;
 const Nt: usize = 100;
 const domain_length: f64 = 1.0;
@@ -41,8 +41,8 @@ const potential_center_x: f64 = 0.5;
 const potential_center_y: f64 = 0.5;
 const potential_center_z: f64 = 0.5;
 const potential_reference_radius: f64 = 0.25;
-const potential_reference_magnitude: f64 = 1.0e-3;
-const singularity_radius: f64 = 1.0e-6;
+const potential_reference_abs: f64 = 5.0e2;
+const center_potential_abs: f64 = 1.6666666666666667e5;
 const T0: f64 = 0.0;
 const Tf: f64 = 0.006;
 const reltol: f64 = 1.0e-6;
@@ -61,8 +61,9 @@ const i_half = Complex.init(0.0, 0.5);
 const inv_dx2_c = Complex.init(inv_dx2, 0.0);
 const inv_dy2_c = Complex.init(inv_dy2, 0.0);
 const inv_dz2_c = Complex.init(inv_dz2, 0.0);
+const potential_k = potential_reference_abs * potential_reference_radius * potential_reference_radius;
+const singularity_radius = @sqrt(potential_k / center_potential_abs);
 const singularity_radius2 = singularity_radius * singularity_radius;
-const potential_k = potential_reference_magnitude * potential_reference_radius * potential_reference_radius;
 
 const Diagnostics = struct {
     norm: f64,
@@ -389,9 +390,10 @@ pub fn main() !void {
         potential_center_y,
         potential_center_z,
     });
-    std.debug.print("    k = {e:.6}, V(r=0.25) = {e:.6}, singularity clamp radius = {e:.6}\n", .{
+    std.debug.print("    k = {e:.6}, V(r=0.25) = {e:.6}, V(r<=r_clamp) = {e:.6}, r_clamp = {e:.6}\n", .{
         potential_k,
         -potential_k / (potential_reference_radius * potential_reference_radius),
+        -center_potential_abs,
         singularity_radius,
     });
     std.debug.print("    ARKODE method = implicit midpoint (DIRK), reltol = {e}, abstol = {e}\n", .{ reltol, abstol });
