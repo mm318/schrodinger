@@ -3,7 +3,7 @@
     .version = "0.0.0",
     .fingerprint = 0x7500392784adb00f, // Changing this has security and trust implications.
 
-    .minimum_zig_version = "0.14.0",
+    .minimum_zig_version = "0.16.0",
 
     .dependencies = .{
         .arkode = .{

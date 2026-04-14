@@ -101,17 +101,19 @@ fn potentialAt(xcoord: f64, ycoord: f64, zcoord: f64) f64 {
 
 const Plotter = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     mesh_builder: VtuWriter.UnstructuredMeshBuilder,
     real_data: []f64,
     imag_data: []f64,
     prob_data: []f64,
     potential_data: []f64,
-    series_file: ?std.fs.File = null,
+    series_file: ?std.Io.File = null,
     num_plotted: usize = 0,
 
-    fn init(allocator: std.mem.Allocator) !Plotter {
+    fn init(allocator: std.mem.Allocator, io: std.Io) !Plotter {
         var self = Plotter{
             .allocator = allocator,
+            .io = io,
             .mesh_builder = VtuWriter.UnstructuredMeshBuilder.init(allocator),
             .real_data = try allocator.alloc(f64, neq),
             .imag_data = try allocator.alloc(f64, neq),
@@ -154,9 +156,17 @@ const Plotter = struct {
         return self;
     }
 
+    fn writeSeriesChunk(self: *Plotter, bytes: []const u8) !void {
+        const file = self.series_file orelse return error.SeriesFileNotOpen;
+        var buf: [256]u8 = undefined;
+        var writer = file.writerStreaming(self.io, &buf);
+        try writer.interface.writeAll(bytes);
+        try writer.interface.flush();
+    }
+
     fn startSeries(self: *Plotter) !void {
-        self.series_file = try std.fs.cwd().createFile("schrodinger3d.vtu.series", .{});
-        try self.series_file.?.writeAll("{\n  \"file-series-version\" : \"1.0\",\n  \"files\" : [\n");
+        self.series_file = try std.Io.Dir.cwd().createFile(self.io, "schrodinger3d.vtu.series", .{});
+        try self.writeSeriesChunk("{\n  \"file-series-version\" : \"1.0\",\n  \"files\" : [\n");
     }
 
     fn plot(self: *Plotter, y: *const nvector_complex.CVec, t: f64, filename: []const u8) !void {
@@ -175,10 +185,10 @@ const Plotter = struct {
             .{ "potential", VtuWriter.DataSetType.PointData, 1, self.potential_data },
         };
 
-        try VtuWriter.writeVtu(self.allocator, filename, mesh, &data_sets, .rawbinarycompressed);
-        if (self.series_file) |file| {
+        try VtuWriter.writeVtu(self.allocator, self.io, filename, mesh, &data_sets, .rawbinarycompressed);
+        if (self.series_file != null) {
             if (self.num_plotted > 0) {
-                try file.writeAll(",\n");
+                try self.writeSeriesChunk(",\n");
             }
             var line_buf: [256]u8 = undefined;
             const line = try std.fmt.bufPrint(
@@ -186,7 +196,7 @@ const Plotter = struct {
                 "    {{ \"name\" : \"{s}\", \"time\" : {d:.9} }}",
                 .{ filename, t },
             );
-            try file.writeAll(line);
+            try self.writeSeriesChunk(line);
         }
         self.num_plotted += 1;
     }
@@ -199,8 +209,8 @@ const Plotter = struct {
         self.allocator.free(self.potential_data);
 
         if (self.series_file) |file| {
-            file.writeAll("\n  ]\n}\n") catch {};
-            file.close();
+            self.writeSeriesChunk("\n  ]\n}\n") catch {};
+            file.close(self.io);
         }
     }
 };
@@ -372,8 +382,9 @@ fn ARKStepStats(arkode_mem: *anyopaque) void {
     std.debug.print("    Total number of error test failures ={}\n", .{netfails});
 }
 
-pub fn main() !void {
-    const allocator = std.heap.c_allocator;
+pub fn main(init: std.process.Init) !void {
+    const allocator = init.gpa;
+    const io = init.io;
 
     var sunctx: c.SUNContext = null;
     if (c.SUNContext_Create(c.SUN_COMM_NULL, &sunctx) != 0) {
@@ -414,7 +425,7 @@ pub fn main() !void {
     const y = nvector_complex.N_VGetCVec(sunvec_y);
     initializeWavefunction(y);
 
-    var plotter = try Plotter.init(allocator);
+    var plotter = try Plotter.init(allocator, io);
     defer plotter.deinit();
     try plotter.startSeries();
 
