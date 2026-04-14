@@ -1,28 +1,7 @@
 const std = @import("std");
 
-const nvector_complex = @import("nvector_complex");
-const Complex = nvector_complex.Complex;
-
-const nv = nvector_complex.c;
-pub const c = @cImport({
-    @cInclude("arkode/arkode.h");
-    @cInclude("arkode/arkode_arkstep.h");
-    @cInclude("sunnonlinsol/sunnonlinsol_fixedpoint.h");
-});
-
+const a = @import("arkode-zig");
 const VtuWriter = @import("vtu_writer");
-
-inline fn asNVector(v: nv.N_Vector) c.N_Vector {
-    return @ptrCast(v);
-}
-
-inline fn asComplexNVector(v: c.N_Vector) nv.N_Vector {
-    return @ptrCast(v);
-}
-
-inline fn asComplexSunContext(ctx: c.SUNContext) nv.SUNContext {
-    return @ptrCast(ctx);
-}
 
 // Grid and simulation size. Odd dimensions keep a cell center exactly at (0.5, 0.5, 0.5).
 const Nx: usize = 101;
@@ -64,11 +43,11 @@ const inv_dx2 = 1.0 / (dx * dx);
 const inv_dy2 = 1.0 / (dy * dy);
 const inv_dz2 = 1.0 / (dz * dz);
 const cell_volume = dx * dy * dz;
-const two = Complex.init(2.0, 0.0);
-const i_half = Complex.init(0.0, 0.5);
-const inv_dx2_c = Complex.init(inv_dx2, 0.0);
-const inv_dy2_c = Complex.init(inv_dy2, 0.0);
-const inv_dz2_c = Complex.init(inv_dz2, 0.0);
+const two = a.Complex.init(2.0, 0.0);
+const i_half = a.Complex.init(0.0, 0.5);
+const inv_dx2_c = a.Complex.init(inv_dx2, 0.0);
+const inv_dy2_c = a.Complex.init(inv_dy2, 0.0);
+const inv_dz2_c = a.Complex.init(inv_dz2, 0.0);
 
 // k is set so V(r=0.25) = -500. The singularity is clamped so V_min = -center_potential_abs.
 const potential_k = potential_reference_abs * potential_reference_radius * potential_reference_radius;
@@ -169,7 +148,7 @@ const Plotter = struct {
         try self.writeSeriesChunk("{\n  \"file-series-version\" : \"1.0\",\n  \"files\" : [\n");
     }
 
-    fn plot(self: *Plotter, y: *const nvector_complex.CVec, t: f64, filename: []const u8) !void {
+    fn plot(self: *Plotter, y: *const a.CVec, t: f64, filename: []const u8) !void {
         for (0..neq) |i| {
             const psi = y.data[i];
             self.real_data[i] = psi.re;
@@ -215,7 +194,7 @@ const Plotter = struct {
     }
 };
 
-fn normalizeWavefunction(y: *nvector_complex.CVec) void {
+fn normalizeWavefunction(y: *a.CVec) void {
     var sum_prob: f64 = 0.0;
     for (0..neq) |i| {
         const psi = y.data[i];
@@ -226,13 +205,13 @@ fn normalizeWavefunction(y: *nvector_complex.CVec) void {
     if (norm == 0.0) return;
 
     const scale = 1.0 / @sqrt(norm);
-    const scale_c = Complex.init(scale, 0.0);
+    const scale_c = a.Complex.init(scale, 0.0);
     for (0..neq) |i| {
         y.data[i] = y.data[i].mul(scale_c);
     }
 }
 
-fn initializeWavefunction(y: *nvector_complex.CVec) void {
+fn initializeWavefunction(y: *a.CVec) void {
     const sigma2 = packet_radius * packet_radius;
     for (0..Nz) |iz| {
         const zcoord = (@as(f64, @floatFromInt(iz)) + 0.5) * dz;
@@ -246,7 +225,7 @@ fn initializeWavefunction(y: *nvector_complex.CVec) void {
                 const r2 = rx * rx + ry * ry + rz * rz;
                 const envelope = @exp(-r2 / (2.0 * sigma2));
                 const phase = packet_kx * xcoord + packet_ky * ycoord + packet_kz * zcoord;
-                y.data[idx(ix, iy, iz)] = Complex.init(
+                y.data[idx(ix, iy, iz)] = a.Complex.init(
                     envelope * @cos(phase),
                     envelope * @sin(phase),
                 );
@@ -257,7 +236,7 @@ fn initializeWavefunction(y: *nvector_complex.CVec) void {
     normalizeWavefunction(y);
 }
 
-fn computeDiagnostics(y: *nvector_complex.CVec) Diagnostics {
+fn computeDiagnostics(y: *a.CVec) Diagnostics {
     var sum_prob: f64 = 0.0;
     var sum_xprob: f64 = 0.0;
     var sum_yprob: f64 = 0.0;
@@ -321,11 +300,11 @@ fn computeDiagnostics(y: *nvector_complex.CVec) Diagnostics {
     };
 }
 
-export fn Rhs(tn: c.sunrealtype, sunvec_y: c.N_Vector, sunvec_f: c.N_Vector, user_data: ?*anyopaque) c_int {
+export fn Rhs(tn: a.sunrealtype, sunvec_y: a.N_Vector, sunvec_f: a.N_Vector, user_data: ?*anyopaque) c_int {
     _ = tn;
     _ = user_data;
-    const y = nvector_complex.N_VGetCVec(asComplexNVector(sunvec_y));
-    const f = nvector_complex.N_VGetCVec(asComplexNVector(sunvec_f));
+    const y = a.N_VGetCVec(sunvec_y);
+    const f = a.N_VGetCVec(sunvec_f);
 
     for (0..Nz) |iz| {
         const zcoord = (@as(f64, @floatFromInt(iz)) + 0.5) * dz;
@@ -357,7 +336,7 @@ export fn Rhs(tn: c.sunrealtype, sunvec_y: c.N_Vector, sunvec_f: c.N_Vector, use
                     .mul(inv_dz2_c);
 
                 const v = potentialAt(xcoord, ycoord, zcoord);
-                const potential_term = center.mul(Complex.init(0.0, -v));
+                const potential_term = center.mul(a.Complex.init(0.0, -v));
                 f.data[center_id] = lap_x.add(lap_y).add(lap_z).mul(i_half).add(potential_term);
             }
         }
@@ -371,10 +350,10 @@ fn ARKStepStats(arkode_mem: *anyopaque) void {
     var nfi: c_long = 0;
     var netfails: c_long = 0;
 
-    _ = c.ARKodeGetNumSteps(arkode_mem, &nsteps);
-    _ = c.ARKodeGetNumStepAttempts(arkode_mem, &nst_a);
-    _ = c.ARKodeGetNumRhsEvals(arkode_mem, 1, &nfi);
-    _ = c.ARKodeGetNumErrTestFails(arkode_mem, &netfails);
+    _ = a.ARKodeGetNumSteps(arkode_mem, &nsteps);
+    _ = a.ARKodeGetNumStepAttempts(arkode_mem, &nst_a);
+    _ = a.ARKodeGetNumRhsEvals(arkode_mem, 1, &nfi);
+    _ = a.ARKodeGetNumErrTestFails(arkode_mem, &netfails);
 
     std.debug.print("\nFinal Solver Statistics:\n", .{});
     std.debug.print("    Internal solver steps = {}, (attempted = {})\n", .{ nsteps, nst_a });
@@ -386,12 +365,12 @@ pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
     const io = init.io;
 
-    var sunctx: c.SUNContext = null;
-    if (c.SUNContext_Create(c.SUN_COMM_NULL, &sunctx) != 0) {
+    var sunctx: a.SUNContext = null;
+    if (a.SUNContext_Create(a.SUN_COMM_NULL, &sunctx) != 0) {
         std.debug.print("ERROR: SUNContext_Create failed\n", .{});
         return;
     }
-    defer _ = c.SUNContext_Free(&sunctx);
+    defer _ = a.SUNContext_Free(&sunctx);
 
     std.debug.print("\n3D Schrödinger simulation on a unit cube:\n", .{});
     std.debug.print("    grid = {} x {} x {}, timesteps = {}\n", .{ Nx, Ny, Nz, Nt });
@@ -420,43 +399,43 @@ pub fn main(init: std.process.Init) !void {
     std.debug.print("    ARKODE method = implicit midpoint (DIRK), reltol = {e}, abstol = {e}\n", .{ reltol, abstol });
     std.debug.print("    internal fixed substeps per output step = {}\n", .{internal_substeps});
 
-    const sunvec_y = try nvector_complex.N_VNew_Complex(@intCast(neq), asComplexSunContext(sunctx));
-    defer nvector_complex.N_VDestroy_Complex(sunvec_y);
-    const y = nvector_complex.N_VGetCVec(sunvec_y);
+    const sunvec_y = try a.N_VNew_Complex(@intCast(neq), sunctx);
+    defer a.N_VDestroy_Complex(sunvec_y);
+    const y = a.N_VGetCVec(sunvec_y);
     initializeWavefunction(y);
 
     var plotter = try Plotter.init(allocator, io);
     defer plotter.deinit();
     try plotter.startSeries();
 
-    var arkode_mem: ?*anyopaque = c.ARKStepCreate(null, Rhs, T0, asNVector(sunvec_y), sunctx) orelse {
+    var arkode_mem: ?*anyopaque = a.ARKStepCreate(null, Rhs, T0, sunvec_y, sunctx) orelse {
         std.debug.print("ERROR: ARKStepCreate failed\n", .{});
         return error.SolverSetupFailed;
     };
-    defer c.ARKodeFree(&arkode_mem);
+    defer a.ARKodeFree(&arkode_mem);
 
-    if (c.ARKStepSetTableNum(arkode_mem.?, c.ARKODE_IMPLICIT_MIDPOINT_1_2, c.ARKODE_ERK_NONE) != 0) {
+    if (a.ARKStepSetTableNum(arkode_mem.?, a.ARKODE_IMPLICIT_MIDPOINT_1_2, a.ARKODE_ERK_NONE) != 0) {
         std.debug.print("ERROR: ARKStepSetTableNum failed\n", .{});
         return error.SolverSetupFailed;
     }
 
-    const nls = c.SUNNonlinSol_FixedPoint(asNVector(sunvec_y), 0, sunctx);
+    const nls = a.SUNNonlinSol_FixedPoint(sunvec_y, 0, sunctx);
     if (nls == null) {
         std.debug.print("ERROR: SUNNonlinSol_FixedPoint failed\n", .{});
         return error.SolverSetupFailed;
     }
-    defer _ = c.SUNNonlinSolFree(nls);
+    defer _ = a.SUNNonlinSolFree(nls);
 
-    if (c.ARKodeSetNonlinearSolver(arkode_mem.?, nls) != 0) {
+    if (a.ARKodeSetNonlinearSolver(arkode_mem.?, nls) != 0) {
         std.debug.print("ERROR: ARKodeSetNonlinearSolver failed\n", .{});
         return error.SolverSetupFailed;
     }
 
-    if (c.ARKodeSStolerances(arkode_mem.?, reltol, abstol) != 0) {
+    if (a.ARKodeSStolerances(arkode_mem.?, reltol, abstol) != 0) {
         std.debug.print("ERROR: ARKodeSStolerances failed\n", .{});
         return error.SolverSetupFailed;
     }
-    if (c.ARKodeSetMaxNonlinIters(arkode_mem.?, 20) != 0) {
+    if (a.ARKodeSetMaxNonlinIters(arkode_mem.?, 20) != 0) {
         std.debug.print("ERROR: ARKodeSetMaxNonlinIters failed\n", .{});
         return error.SolverSetupFailed;
     }
@@ -464,7 +443,7 @@ pub fn main(init: std.process.Init) !void {
     var tcur: f64 = T0;
     const dTout = (Tf - T0) / @as(f64, @floatFromInt(Nt));
     const hfixed = dTout / @as(f64, @floatFromInt(internal_substeps));
-    if (c.ARKodeSetFixedStep(arkode_mem.?, hfixed) != 0) {
+    if (a.ARKodeSetFixedStep(arkode_mem.?, hfixed) != 0) {
         std.debug.print("ERROR: ARKodeSetFixedStep failed\n", .{});
         return error.SolverSetupFailed;
     }
@@ -492,7 +471,7 @@ pub fn main(init: std.process.Init) !void {
     try plotter.plot(y, tcur, filename);
 
     for (1..Nt + 1) |step| {
-        const ierr = c.ARKodeEvolve(arkode_mem.?, tout, asNVector(sunvec_y), &tcur, c.ARK_NORMAL);
+        const ierr = a.ARKodeEvolve(arkode_mem.?, tout, sunvec_y, &tcur, a.ARK_NORMAL);
         if (ierr < 0) {
             std.debug.print("ERROR: ARKodeEvolve failed, ierr = {}\n", .{ierr});
             return error.EvolveFailed;

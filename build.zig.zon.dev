@@ -6,7 +6,7 @@
     .minimum_zig_version = "0.16.0",
 
     .dependencies = .{
-        .arkode = .{
+        .arkode_zig = .{
             .path = "../arkode-zig",
         },
         .vtu_writer = .{

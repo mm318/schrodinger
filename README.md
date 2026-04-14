@@ -45,12 +45,3 @@ Run output includes:
 - `schrodinger3d.vtu.series`
 
 Open `schrodinger3d.vtu.series` in ParaView to view the time sequence.
-
-
-## Run Tests
-
-```bash
-zig build -Doptimize=ReleaseSafe test
-```
-
-Tests currently focus on the custom complex `N_Vector` implementation in `test/test_nvector_complex.zig`.
