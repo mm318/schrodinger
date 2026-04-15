@@ -4,7 +4,7 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const arkode_dep = b.dependency("arkode", .{
+    const arkode_zig_dep = b.dependency("arkode_zig", .{
         .target = target,
         .optimize = optimize,
     });
@@ -12,15 +12,17 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    const arkode_zig_mod = arkode_zig_dep.module("arkode-zig");
 
     // We will create a module for our other entry point, 'main.zig'.
     const exe_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
+        .link_libc = true,
     });
     exe_mod.addImport("vtu_writer", vtu_dep.module("vtu_writer"));
-    exe_mod.linkLibrary(arkode_dep.artifact("arkode"));
+    exe_mod.addImport("arkode-zig", arkode_zig_mod);
 
     // This creates another `std.Build.Step.Compile` that builds an executable
     const exe = b.addExecutable(.{

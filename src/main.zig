@@ -1,14 +1,8 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
+const a = @import("arkode-zig");
 const VtuWriter = @import("vtu_writer");
-
-const s = @cImport({
-    @cInclude("nvector/nvector_pthreads.h"); // access to the pthreads N_Vector
-    @cInclude("sunlinsol/sunlinsol_pcg.h"); // access to PCG SUNLinearSolver
-    @cInclude("sunlinsol/sunlinsol_spgmr.h"); // access to SPGMR SUNLinearSolver
-    @cInclude("arkode/arkode_arkstep.h"); // access to ARKStep
-});
 
 const SundialsError = error{
     ArgCorrupt, // argument provided is NULL or corrupted
@@ -101,89 +95,89 @@ const SolverError = SundialsError || ArkodeError;
 
 fn checkedCall(func: anytype, args: anytype) SolverError!void {
     const result = @call(.auto, func, args);
-    if (result < s.SUN_SUCCESS or result < s.ARK_SUCCESS) {
+    if (result < a.SUN_SUCCESS or result < a.ARK_SUCCESS) {
         return switch (result) {
-            s.SUN_ERR_ARG_CORRUPT => SolverError.ArgCorrupt,
-            s.SUN_ERR_ARG_INCOMPATIBLE => SolverError.ArgIncompatible,
-            s.SUN_ERR_ARG_OUTOFRANGE => SolverError.ArgOutOfRange,
-            s.SUN_ERR_ARG_WRONGTYPE => SolverError.ArgWrongType,
-            s.SUN_ERR_ARG_DIMSMISMATCH => SolverError.ArgDimsMismatch,
-            s.SUN_ERR_GENERIC => SolverError.Generic,
-            s.SUN_ERR_CORRUPT => SolverError.Corrupt,
-            s.SUN_ERR_OUTOFRANGE => SolverError.OutOfRange,
-            s.SUN_ERR_FILE_OPEN => SolverError.FileOpen,
-            s.SUN_ERR_OP_FAIL => SolverError.OpFail,
-            s.SUN_ERR_MEM_FAIL => SolverError.MemFail,
-            s.SUN_ERR_MALLOC_FAIL => SolverError.MallocFail,
-            s.SUN_ERR_EXT_FAIL => SolverError.ExtFail,
-            s.SUN_ERR_DESTROY_FAIL => SolverError.DestroyFail,
-            s.SUN_ERR_NOT_IMPLEMENTED => SolverError.NotImplemented,
-            s.SUN_ERR_USER_FCN_FAIL => SolverError.UserFcnFail,
-            s.SUN_ERR_PROFILER_MAPFULL => SolverError.ProfilerMapFull,
-            s.SUN_ERR_PROFILER_MAPGET => SolverError.ProfilerMapGet,
-            s.SUN_ERR_PROFILER_MAPINSERT => SolverError.ProfilerMapInsert,
-            s.SUN_ERR_PROFILER_MAPKEYNOTFOUND => SolverError.ProfilerMapKeyNotFound,
-            s.SUN_ERR_PROFILER_MAPSORT => SolverError.ProfilerMapSort,
-            s.SUN_ERR_SUNCTX_CORRUPT => SolverError.SunCtxCorrupt,
-            s.SUN_ERR_MPI_FAIL => SolverError.MpiFail,
-            s.SUN_ERR_UNREACHABLE => SolverError.Unreachable,
-            s.SUN_ERR_UNKNOWN => SolverError.Unknown,
-            s.ARK_TSTOP_RETURN => SolverError.TStopReturn,
-            s.ARK_ROOT_RETURN => SolverError.RootReturn,
-            s.ARK_WARNING => SolverError.Warning,
-            s.ARK_TOO_MUCH_WORK => SolverError.TooMuchWork,
-            s.ARK_TOO_MUCH_ACC => SolverError.TooMuchAcc,
-            s.ARK_ERR_FAILURE => SolverError.ErrFailure,
-            s.ARK_CONV_FAILURE => SolverError.ConvFailure,
-            s.ARK_LINIT_FAIL => SolverError.LInitFail,
-            s.ARK_LSETUP_FAIL => SolverError.LSetupFail,
-            s.ARK_LSOLVE_FAIL => SolverError.LSolveFail,
-            s.ARK_RHSFUNC_FAIL => SolverError.RhsFuncFail,
-            s.ARK_FIRST_RHSFUNC_ERR => SolverError.FirstRhsFuncErr,
-            s.ARK_REPTD_RHSFUNC_ERR => SolverError.ReptdRhsFuncErr,
-            s.ARK_UNREC_RHSFUNC_ERR => SolverError.UnrecRhsFuncErr,
-            s.ARK_RTFUNC_FAIL => SolverError.RtFuncFail,
-            s.ARK_LFREE_FAIL => SolverError.LFreeFail,
-            s.ARK_MASSINIT_FAIL => SolverError.MassInitFail,
-            s.ARK_MASSSETUP_FAIL => SolverError.MassSetupFail,
-            s.ARK_MASSSOLVE_FAIL => SolverError.MassSolveFail,
-            s.ARK_MASSFREE_FAIL => SolverError.MassFreeFail,
-            s.ARK_MASSMULT_FAIL => SolverError.MassMultFail,
-            s.ARK_CONSTR_FAIL => SolverError.ConstrFail,
-            s.ARK_MEM_FAIL => SolverError.MemFail,
-            s.ARK_MEM_NULL => SolverError.MemNull,
-            s.ARK_ILL_INPUT => SolverError.IllInput,
-            s.ARK_NO_MALLOC => SolverError.NoMalloc,
-            s.ARK_BAD_K => SolverError.BadK,
-            s.ARK_BAD_T => SolverError.BadT,
-            s.ARK_BAD_DKY => SolverError.BadDky,
-            s.ARK_TOO_CLOSE => SolverError.TooClose,
-            s.ARK_VECTOROP_ERR => SolverError.VectorOpErr,
-            s.ARK_NLS_INIT_FAIL => SolverError.NlsInitFail,
-            s.ARK_NLS_SETUP_FAIL => SolverError.NlsSetupFail,
-            s.ARK_NLS_SETUP_RECVR => SolverError.NlsSetupRecvr,
-            s.ARK_NLS_OP_ERR => SolverError.NlsOpErr,
-            s.ARK_INNERSTEP_ATTACH_ERR => SolverError.InnerStepAttachErr,
-            s.ARK_INNERSTEP_FAIL => SolverError.InnerStepFail,
-            s.ARK_OUTERTOINNER_FAIL => SolverError.OuterToInnerFail,
-            s.ARK_INNERTOOUTER_FAIL => SolverError.InnerToOuterFail,
-            s.ARK_POSTPROCESS_STEP_FAIL => SolverError.PostProcessStepFail,
-            s.ARK_POSTPROCESS_STAGE_FAIL => SolverError.PostProcessStageFail,
-            s.ARK_USER_PREDICT_FAIL => SolverError.UserPredictFail,
-            s.ARK_INTERP_FAIL => SolverError.InterpFail,
-            s.ARK_INVALID_TABLE => SolverError.InvalidTable,
-            s.ARK_CONTEXT_ERR => SolverError.ContextErr,
-            s.ARK_RELAX_FAIL => SolverError.RelaxFail,
-            s.ARK_RELAX_MEM_NULL => SolverError.RelaxMemNull,
-            s.ARK_RELAX_FUNC_FAIL => SolverError.RelaxFuncFail,
-            s.ARK_RELAX_JAC_FAIL => SolverError.RelaxJacFail,
-            s.ARK_CONTROLLER_ERR => SolverError.ControllerErr,
-            s.ARK_STEPPER_UNSUPPORTED => SolverError.StepperUnsupported,
-            s.ARK_DOMEIG_FAIL => SolverError.DomeigFail,
-            s.ARK_MAX_STAGE_LIMIT_FAIL => SolverError.MaxStageLimitFail,
-            s.ARK_SUNSTEPPER_ERR => SolverError.SunstepperErr,
-            s.ARK_STEP_DIRECTION_ERR => SolverError.StepDirectionErr,
-            s.ARK_UNRECOGNIZED_ERROR => SolverError.UnrecognizedError,
+            a.SUN_ERR_ARG_CORRUPT => SolverError.ArgCorrupt,
+            a.SUN_ERR_ARG_INCOMPATIBLE => SolverError.ArgIncompatible,
+            a.SUN_ERR_ARG_OUTOFRANGE => SolverError.ArgOutOfRange,
+            a.SUN_ERR_ARG_WRONGTYPE => SolverError.ArgWrongType,
+            a.SUN_ERR_ARG_DIMSMISMATCH => SolverError.ArgDimsMismatch,
+            a.SUN_ERR_GENERIC => SolverError.Generic,
+            a.SUN_ERR_CORRUPT => SolverError.Corrupt,
+            a.SUN_ERR_OUTOFRANGE => SolverError.OutOfRange,
+            a.SUN_ERR_FILE_OPEN => SolverError.FileOpen,
+            a.SUN_ERR_OP_FAIL => SolverError.OpFail,
+            a.SUN_ERR_MEM_FAIL => SolverError.MemFail,
+            a.SUN_ERR_MALLOC_FAIL => SolverError.MallocFail,
+            a.SUN_ERR_EXT_FAIL => SolverError.ExtFail,
+            a.SUN_ERR_DESTROY_FAIL => SolverError.DestroyFail,
+            a.SUN_ERR_NOT_IMPLEMENTED => SolverError.NotImplemented,
+            a.SUN_ERR_USER_FCN_FAIL => SolverError.UserFcnFail,
+            a.SUN_ERR_PROFILER_MAPFULL => SolverError.ProfilerMapFull,
+            a.SUN_ERR_PROFILER_MAPGET => SolverError.ProfilerMapGet,
+            a.SUN_ERR_PROFILER_MAPINSERT => SolverError.ProfilerMapInsert,
+            a.SUN_ERR_PROFILER_MAPKEYNOTFOUND => SolverError.ProfilerMapKeyNotFound,
+            a.SUN_ERR_PROFILER_MAPSORT => SolverError.ProfilerMapSort,
+            a.SUN_ERR_SUNCTX_CORRUPT => SolverError.SunCtxCorrupt,
+            a.SUN_ERR_MPI_FAIL => SolverError.MpiFail,
+            a.SUN_ERR_UNREACHABLE => SolverError.Unreachable,
+            a.SUN_ERR_UNKNOWN => SolverError.Unknown,
+            a.ARK_TSTOP_RETURN => SolverError.TStopReturn,
+            a.ARK_ROOT_RETURN => SolverError.RootReturn,
+            a.ARK_WARNING => SolverError.Warning,
+            a.ARK_TOO_MUCH_WORK => SolverError.TooMuchWork,
+            a.ARK_TOO_MUCH_ACC => SolverError.TooMuchAcc,
+            a.ARK_ERR_FAILURE => SolverError.ErrFailure,
+            a.ARK_CONV_FAILURE => SolverError.ConvFailure,
+            a.ARK_LINIT_FAIL => SolverError.LInitFail,
+            a.ARK_LSETUP_FAIL => SolverError.LSetupFail,
+            a.ARK_LSOLVE_FAIL => SolverError.LSolveFail,
+            a.ARK_RHSFUNC_FAIL => SolverError.RhsFuncFail,
+            a.ARK_FIRST_RHSFUNC_ERR => SolverError.FirstRhsFuncErr,
+            a.ARK_REPTD_RHSFUNC_ERR => SolverError.ReptdRhsFuncErr,
+            a.ARK_UNREC_RHSFUNC_ERR => SolverError.UnrecRhsFuncErr,
+            a.ARK_RTFUNC_FAIL => SolverError.RtFuncFail,
+            a.ARK_LFREE_FAIL => SolverError.LFreeFail,
+            a.ARK_MASSINIT_FAIL => SolverError.MassInitFail,
+            a.ARK_MASSSETUP_FAIL => SolverError.MassSetupFail,
+            a.ARK_MASSSOLVE_FAIL => SolverError.MassSolveFail,
+            a.ARK_MASSFREE_FAIL => SolverError.MassFreeFail,
+            a.ARK_MASSMULT_FAIL => SolverError.MassMultFail,
+            a.ARK_CONSTR_FAIL => SolverError.ConstrFail,
+            a.ARK_MEM_FAIL => SolverError.MemFail,
+            a.ARK_MEM_NULL => SolverError.MemNull,
+            a.ARK_ILL_INPUT => SolverError.IllInput,
+            a.ARK_NO_MALLOC => SolverError.NoMalloc,
+            a.ARK_BAD_K => SolverError.BadK,
+            a.ARK_BAD_T => SolverError.BadT,
+            a.ARK_BAD_DKY => SolverError.BadDky,
+            a.ARK_TOO_CLOSE => SolverError.TooClose,
+            a.ARK_VECTOROP_ERR => SolverError.VectorOpErr,
+            a.ARK_NLS_INIT_FAIL => SolverError.NlsInitFail,
+            a.ARK_NLS_SETUP_FAIL => SolverError.NlsSetupFail,
+            a.ARK_NLS_SETUP_RECVR => SolverError.NlsSetupRecvr,
+            a.ARK_NLS_OP_ERR => SolverError.NlsOpErr,
+            a.ARK_INNERSTEP_ATTACH_ERR => SolverError.InnerStepAttachErr,
+            a.ARK_INNERSTEP_FAIL => SolverError.InnerStepFail,
+            a.ARK_OUTERTOINNER_FAIL => SolverError.OuterToInnerFail,
+            a.ARK_INNERTOOUTER_FAIL => SolverError.InnerToOuterFail,
+            a.ARK_POSTPROCESS_STEP_FAIL => SolverError.PostProcessStepFail,
+            a.ARK_POSTPROCESS_STAGE_FAIL => SolverError.PostProcessStageFail,
+            a.ARK_USER_PREDICT_FAIL => SolverError.UserPredictFail,
+            a.ARK_INTERP_FAIL => SolverError.InterpFail,
+            a.ARK_INVALID_TABLE => SolverError.InvalidTable,
+            a.ARK_CONTEXT_ERR => SolverError.ContextErr,
+            a.ARK_RELAX_FAIL => SolverError.RelaxFail,
+            a.ARK_RELAX_MEM_NULL => SolverError.RelaxMemNull,
+            a.ARK_RELAX_FUNC_FAIL => SolverError.RelaxFuncFail,
+            a.ARK_RELAX_JAC_FAIL => SolverError.RelaxJacFail,
+            a.ARK_CONTROLLER_ERR => SolverError.ControllerErr,
+            a.ARK_STEPPER_UNSUPPORTED => SolverError.StepperUnsupported,
+            a.ARK_DOMEIG_FAIL => SolverError.DomeigFail,
+            a.ARK_MAX_STAGE_LIMIT_FAIL => SolverError.MaxStageLimitFail,
+            a.ARK_SUNSTEPPER_ERR => SolverError.SunstepperErr,
+            a.ARK_STEP_DIRECTION_ERR => SolverError.StepDirectionErr,
+            a.ARK_UNRECOGNIZED_ERROR => SolverError.UnrecognizedError,
             else => SolverError.Unknown,
         };
     }
@@ -201,11 +195,16 @@ fn checkedMemOp(func: anytype, args: anytype) !funcPtrRetType(func) {
     return result;
 }
 
+fn elapsedSecondsSince(io: std.Io, start: std.Io.Timestamp) f64 {
+    const elapsed_ns = start.untilNow(io, .awake).toNanoseconds();
+    return @as(f64, @floatFromInt(elapsed_ns)) / @as(f64, @floatFromInt(std.time.ns_per_s));
+}
+
 // Macros for problem constants
-const PI = s.SUN_RCONST(3.141592653589793238462643383279502884197169);
-const ZERO = s.SUN_RCONST(0.0);
-const ONE = s.SUN_RCONST(1.0);
-const TWO = s.SUN_RCONST(2.0);
+const PI = a.SUN_RCONST(3.141592653589793238462643383279502884197169);
+const ZERO = a.SUN_RCONST(0.0);
+const ONE = a.SUN_RCONST(1.0);
+const TWO = a.SUN_RCONST(2.0);
 
 const Domain = struct {
     const Coord = struct {
@@ -215,32 +214,32 @@ const Domain = struct {
     };
 
     // Diffusion coefficients in the x and y directions
-    kx: s.sunrealtype,
-    ky: s.sunrealtype,
-    kz: s.sunrealtype,
+    kx: a.sunrealtype,
+    ky: a.sunrealtype,
+    kz: a.sunrealtype,
 
     // Upper bounds in x and y directions
-    xu: s.sunrealtype,
-    yu: s.sunrealtype,
-    zu: s.sunrealtype,
+    xu: a.sunrealtype,
+    yu: a.sunrealtype,
+    zu: a.sunrealtype,
 
     // Number of nodes in the x and y directions
-    nx: s.sunindextype,
-    ny: s.sunindextype,
-    nz: s.sunindextype,
+    nx: a.sunindextype,
+    ny: a.sunindextype,
+    nz: a.sunindextype,
 
     // Total number of nodes
-    nodes: s.sunindextype,
+    nodes: a.sunindextype,
 
     // Mesh spacing in the x and y directions
-    dx: s.sunrealtype,
-    dy: s.sunrealtype,
-    dz: s.sunrealtype,
+    dx: a.sunrealtype,
+    dy: a.sunrealtype,
+    dz: a.sunrealtype,
 
     // Final time
-    tf: s.sunrealtype,
+    tf: a.sunrealtype,
 
-    fn init(l: s.sunrealtype, n: s.sunindextype) Domain {
+    fn init(l: a.sunrealtype, n: a.sunindextype) Domain {
         var domain: Domain = undefined;
 
         // Diffusion coefficient
@@ -302,29 +301,27 @@ const Domain = struct {
 
     // f routine to compute the ODE RHS function f(t,y).
     export fn f(
-        _: s.sunrealtype,
-        u: s.N_Vector,
-        u_dot: s.N_Vector,
+        _: a.sunrealtype,
+        u: a.N_Vector,
+        u_dot: a.N_Vector,
         user_data: ?*anyopaque,
     ) i32 {
-        // Start timer
-        var timer = std.time.Timer.start() catch return -1;
-
         // Access problem data
         const solver: *Solver = @ptrCast(@alignCast(user_data));
+        const start = std.Io.Timestamp.now(solver.io, .awake);
         const p: *const Domain = solver.domain;
 
-        const U = checkedMemOp(s.N_VGetArrayPointer, .{u}) catch return 1;
-        const Udot = checkedMemOp(s.N_VGetArrayPointer, .{u_dot}) catch return 1;
-        s.N_VConst(0.0, u_dot); // Initialize ydot to zero
+        const U = checkedMemOp(a.N_VGetArrayPointer, .{u}) catch return 1;
+        const Udot = checkedMemOp(a.N_VGetArrayPointer, .{u_dot}) catch return 1;
+        a.N_VConst(0.0, u_dot); // Initialize ydot to zero
 
         // iterate over domain, computing all equations
-        const c1x: s.sunrealtype = p.kx / p.dx / p.dx;
-        const c2x: s.sunrealtype = -2.0 * c1x;
-        const c1y: s.sunrealtype = p.ky / p.dy / p.dy;
-        const c2y: s.sunrealtype = -2.0 * c1y;
-        const c1z: s.sunrealtype = p.kz / p.dz / p.dz;
-        const c2z: s.sunrealtype = -2.0 * c1z;
+        const c1x: a.sunrealtype = p.kx / p.dx / p.dx;
+        const c2x: a.sunrealtype = -2.0 * c1x;
+        const c1y: a.sunrealtype = p.ky / p.dy / p.dy;
+        const c2y: a.sunrealtype = -2.0 * c1y;
+        const c1z: a.sunrealtype = p.kz / p.dz / p.dz;
+        const c2z: a.sunrealtype = -2.0 * c1z;
 
         var i: isize = 0;
         var x_prev = i - 1;
@@ -360,7 +357,7 @@ const Domain = struct {
         }
 
         // Update timer
-        solver.rhstime += @as(f64, @floatFromInt(timer.read())) / std.time.ns_per_s;
+        solver.rhstime += elapsedSecondsSince(solver.io, start);
 
         return 0; // return with success
     }
@@ -391,9 +388,9 @@ const Solver = struct {
         num_threads: usize,
 
         // Integrator settings
-        rtol: s.sunrealtype, // relative tolerance
-        atol: s.sunrealtype, // absolute tolerance
-        hfixed: s.sunrealtype, // fixed step size
+        rtol: a.sunrealtype, // relative tolerance
+        atol: a.sunrealtype, // absolute tolerance
+        hfixed: a.sunrealtype, // fixed step size
         order: i32, // ARKode method order
         // step size adaptivity method: 0=PID, 1=PI,
         //   2=I, 3=ExpGus, 4=ImpGus, 5=ImExGus,
@@ -409,7 +406,7 @@ const Solver = struct {
         lsinfo: bool, // output residual history
         liniters: i32, // number of linear iterations
         msbp: i32, // max number of steps between preconditioner setups
-        epslin: s.sunrealtype, // linear solver tolerance factor
+        epslin: a.sunrealtype, // linear solver tolerance factor
 
         // Output variables
         output: i32, // output level
@@ -422,8 +419,8 @@ const Solver = struct {
             opts.num_threads = 8;
 
             // Integrator settings
-            opts.rtol = s.SUN_RCONST(1e-5); // relative tolerance
-            opts.atol = s.SUN_RCONST(1e-10); // absolute tolerance
+            opts.rtol = a.SUN_RCONST(1e-5); // relative tolerance
+            opts.atol = a.SUN_RCONST(1e-10); // absolute tolerance
             opts.hfixed = ZERO; // using adaptive step sizes
             opts.order = 3; // method order
             opts.controller = 0; // PID controller
@@ -473,16 +470,17 @@ const Solver = struct {
 
     options: Options,
 
-    ctx: s.SUNContext, // The SUNDIALS context object for this simulation
+    ctx: a.SUNContext, // The SUNDIALS context object for this simulation
     arkode_mem: ?*anyopaque, // ARKODE memory structure
-    LS: s.SUNLinearSolver, // linear solver memory structure
-    C: s.SUNAdaptController, // Adaptivity controller
+    LS: a.SUNLinearSolver, // linear solver memory structure
+    C: a.SUNAdaptController, // Adaptivity controller
 
     domain: *const Domain,
-    d: s.N_Vector, // Inverse of Jacobian diagonal for preconditioner
-    u: s.N_Vector, // vector for storing solution
+    d: a.N_Vector, // Inverse of Jacobian diagonal for preconditioner
+    u: a.N_Vector, // vector for storing solution
 
     // Timing variables
+    io: std.Io,
     evolvetime: f64 = 0.0,
     rhstime: f64 = 0.0,
     psetuptime: f64 = 0.0,
@@ -490,37 +488,35 @@ const Solver = struct {
 
     // Preconditioner setup routine
     export fn PSetup(
-        _: s.sunrealtype,
-        _: s.N_Vector,
-        _: s.N_Vector,
-        _: s.sunbooleantype,
-        _: [*c]s.sunbooleantype,
-        gamma: s.sunrealtype,
+        _: a.sunrealtype,
+        _: a.N_Vector,
+        _: a.N_Vector,
+        _: a.sunbooleantype,
+        _: [*c]a.sunbooleantype,
+        gamma: a.sunrealtype,
         user_data: ?*anyopaque,
     ) i32 {
-        // Start timer
-        var timer = std.time.Timer.start() catch return -1;
-
         // Access problem data
         const solver: *Solver = @ptrCast(@alignCast(user_data));
+        const start = std.Io.Timestamp.now(solver.io, .awake);
         const udata: *const Domain = solver.domain;
 
         // Access data array
-        _ = checkedMemOp(s.N_VGetArrayPointer, .{solver.d}) catch return -1;
+        _ = checkedMemOp(a.N_VGetArrayPointer, .{solver.d}) catch return -1;
 
         // Constants for computing diffusion
-        const cx: s.sunrealtype = udata.kx / (udata.dx * udata.dx);
-        const cy: s.sunrealtype = udata.ky / (udata.dy * udata.dy);
-        const cz: s.sunrealtype = udata.kz / (udata.dz * udata.dz);
-        const cc: s.sunrealtype = -TWO * (cx + cy + cz);
+        const cx: a.sunrealtype = udata.kx / (udata.dx * udata.dx);
+        const cy: a.sunrealtype = udata.ky / (udata.dy * udata.dy);
+        const cz: a.sunrealtype = udata.kz / (udata.dz * udata.dz);
+        const cc: a.sunrealtype = -TWO * (cx + cy + cz);
 
         // Set all entries of d to the inverse diagonal values of interior
         // (since boundary RHS is 0, set boundary diagonals to the same)
-        const c: s.sunrealtype = ONE / (ONE - gamma * cc);
-        s.N_VConst(c, solver.d);
+        const c: a.sunrealtype = ONE / (ONE - gamma * cc);
+        a.N_VConst(c, solver.d);
 
         // Update timer
-        solver.psetuptime += @as(f64, @floatFromInt(timer.read())) / std.time.ns_per_s;
+        solver.psetuptime += elapsedSecondsSince(solver.io, start);
 
         // Return success
         return 0;
@@ -528,48 +524,47 @@ const Solver = struct {
 
     // Preconditioner solve routine for Pz = r
     export fn PSolve(
-        _: s.sunrealtype,
-        _: s.N_Vector,
-        _: s.N_Vector,
-        r: s.N_Vector,
-        z: s.N_Vector,
-        _: s.sunrealtype,
-        _: s.sunrealtype,
+        _: a.sunrealtype,
+        _: a.N_Vector,
+        _: a.N_Vector,
+        r: a.N_Vector,
+        z: a.N_Vector,
+        _: a.sunrealtype,
+        _: a.sunrealtype,
         _: i32,
         user_data: ?*anyopaque,
     ) i32 {
-        // Start timer
-        var timer = std.time.Timer.start() catch return -1;
-
         // Access user_data structure
         const solver: *Solver = @ptrCast(@alignCast(user_data));
+        const start = std.Io.Timestamp.now(solver.io, .awake);
 
         // Perform Jacobi iteration
-        s.N_VProd(solver.d, r, z);
+        a.N_VProd(solver.d, r, z);
 
         // Update timer
-        solver.psolvetime += @as(f64, @floatFromInt(timer.read())) / std.time.ns_per_s;
+        solver.psolvetime += elapsedSecondsSince(solver.io, start);
 
         // Return success
         return 0;
     }
 
-    fn init(allocator: std.mem.Allocator, domain: *Domain, opts: Options) !*Solver {
+    fn init(allocator: std.mem.Allocator, io: std.Io, domain: *Domain, opts: Options) !*Solver {
         const solver = try allocator.create(Solver);
         solver.options = opts;
+        solver.io = io;
         solver.domain = domain;
         solver.ctx = null;
         solver.arkode_mem = null;
         solver.LS = null;
         solver.C = null;
 
-        try checkedCall(s.SUNContext_Create, .{ s.SUN_COMM_NULL, &solver.ctx });
+        try checkedCall(a.SUNContext_Create, .{ a.SUN_COMM_NULL, &solver.ctx });
 
         if (opts.diagnostics or opts.lsinfo) {
-            var logger: s.SUNLogger = null;
-            try checkedCall(s.SUNContext_GetLogger, .{ solver.ctx, &logger });
-            try checkedCall(s.SUNLogger_SetInfoFilename, .{ logger, "diagnostics.txt" });
-            try checkedCall(s.SUNLogger_SetDebugFilename, .{ logger, "diagnostics.txt" });
+            var logger: a.SUNLogger = null;
+            try checkedCall(a.SUNContext_GetLogger, .{ solver.ctx, &logger });
+            try checkedCall(a.SUNLogger_SetInfoFilename, .{ logger, "diagnostics.txt" });
+            try checkedCall(a.SUNLogger_SetDebugFilename, .{ logger, "diagnostics.txt" });
         }
 
         // ----------------------
@@ -577,27 +572,27 @@ const Solver = struct {
         // ----------------------
 
         // Create vector for solution
-        solver.u = try checkedMemOp(s.N_VNew_Pthreads, .{ domain.nodes, @as(i32, @intCast(opts.num_threads)), solver.ctx });
+        solver.u = try checkedMemOp(a.N_VNew_Pthreads, .{ domain.nodes, @as(i32, @intCast(opts.num_threads)), solver.ctx });
 
         // Set initial condition: Initialize u to zero (handles boundary conditions)
-        s.N_VConst(ZERO, solver.u);
+        a.N_VConst(ZERO, solver.u);
 
         // ---------------------
         // Create linear solver
         // ---------------------
 
         // Create linear solver
-        const prectype: i32 = if (opts.prec) s.SUN_PREC_RIGHT else s.SUN_PREC_NONE;
+        const prectype: i32 = if (opts.prec) a.SUN_PREC_RIGHT else a.SUN_PREC_NONE;
 
         if (opts.pcg) {
-            solver.LS = try checkedMemOp(s.SUNLinSol_PCG, .{ solver.u, prectype, opts.liniters, solver.ctx });
+            solver.LS = try checkedMemOp(a.SUNLinSol_PCG, .{ solver.u, prectype, opts.liniters, solver.ctx });
         } else {
-            solver.LS = try checkedMemOp(s.SUNLinSol_SPGMR, .{ solver.u, prectype, opts.liniters, solver.ctx });
+            solver.LS = try checkedMemOp(a.SUNLinSol_SPGMR, .{ solver.u, prectype, opts.liniters, solver.ctx });
         }
 
         // Allocate preconditioner workspace
         if (opts.prec) {
-            solver.d = try checkedMemOp(s.N_VClone, .{solver.u});
+            solver.d = try checkedMemOp(a.N_VClone, .{solver.u});
         } else {
             solver.d = null;
         }
@@ -607,81 +602,81 @@ const Solver = struct {
         // --------------
 
         // Create integrator
-        solver.arkode_mem = try checkedMemOp(s.ARKStepCreate, .{ null, &Domain.f, ZERO, solver.u, solver.ctx });
+        solver.arkode_mem = try checkedMemOp(a.ARKStepCreate, .{ null, &Domain.f, ZERO, solver.u, solver.ctx });
 
         // Specify tolerances
-        try checkedCall(s.ARKodeSStolerances, .{ solver.arkode_mem, opts.rtol, opts.atol });
+        try checkedCall(a.ARKodeSStolerances, .{ solver.arkode_mem, opts.rtol, opts.atol });
 
         // Attach user data
-        try checkedCall(s.ARKodeSetUserData, .{ solver.arkode_mem, @as(?*anyopaque, @ptrCast(solver)) });
+        try checkedCall(a.ARKodeSetUserData, .{ solver.arkode_mem, @as(?*anyopaque, @ptrCast(solver)) });
 
         // Attach linear solver
-        try checkedCall(s.ARKodeSetLinearSolver, .{ solver.arkode_mem, solver.LS, null });
+        try checkedCall(a.ARKodeSetLinearSolver, .{ solver.arkode_mem, solver.LS, null });
 
         if (opts.prec) {
             // Attach preconditioner
-            try checkedCall(s.ARKodeSetPreconditioner, .{ solver.arkode_mem, Solver.PSetup, Solver.PSolve });
+            try checkedCall(a.ARKodeSetPreconditioner, .{ solver.arkode_mem, Solver.PSetup, Solver.PSolve });
 
             // Set linear solver setup frequency (update preconditioner)
-            try checkedCall(s.ARKodeSetLSetupFrequency, .{ solver.arkode_mem, opts.msbp });
+            try checkedCall(a.ARKodeSetLSetupFrequency, .{ solver.arkode_mem, opts.msbp });
         }
 
         // Set linear solver tolerance factor
-        try checkedCall(s.ARKodeSetEpsLin, .{ solver.arkode_mem, opts.epslin });
+        try checkedCall(a.ARKodeSetEpsLin, .{ solver.arkode_mem, opts.epslin });
 
         // Select method order
         if (opts.order > 1) {
             // Use an ARKode provided table
-            try checkedCall(s.ARKodeSetOrder, .{ solver.arkode_mem, opts.order });
+            try checkedCall(a.ARKodeSetOrder, .{ solver.arkode_mem, opts.order });
         } else {
             // Use implicit Euler (requires fixed step size)
-            var A: [1]s.sunrealtype = .{ONE};
-            var b: [1]s.sunrealtype = .{ONE};
-            var c: [1]s.sunrealtype = .{ONE};
+            var A: [1]a.sunrealtype = .{ONE};
+            var b: [1]a.sunrealtype = .{ONE};
+            var c: [1]a.sunrealtype = .{ONE};
 
             // Create implicit Euler Butcher table
-            const B: s.ARKodeButcherTable = try checkedMemOp(
-                s.ARKodeButcherTable_Create,
+            const B: a.ARKodeButcherTable = try checkedMemOp(
+                a.ARKodeButcherTable_Create,
                 .{ 1, 1, 0, &c, &A, &b, null },
             );
 
             // Attach the Butcher table
-            try checkedCall(s.ARKStepSetTables, .{ solver.arkode_mem, 1, 0, B, null });
+            try checkedCall(a.ARKStepSetTables, .{ solver.arkode_mem, 1, 0, B, null });
 
             // Free the Butcher table
-            s.ARKodeButcherTable_Free(B);
+            a.ARKodeButcherTable_Free(B);
         }
 
         // Set fixed step size or adaptivity method
         if (opts.hfixed > ZERO) {
-            try checkedCall(s.ARKodeSetFixedStep, .{ solver.arkode_mem, opts.hfixed });
+            try checkedCall(a.ARKodeSetFixedStep, .{ solver.arkode_mem, opts.hfixed });
         } else {
             solver.C = switch (opts.controller) {
-                0 => s.SUNAdaptController_PID(solver.ctx),
-                1 => s.SUNAdaptController_PI(solver.ctx),
-                2 => s.SUNAdaptController_I(solver.ctx),
-                3 => s.SUNAdaptController_ExpGus(solver.ctx),
-                4 => s.SUNAdaptController_ImpGus(solver.ctx),
-                5 => s.SUNAdaptController_ImExGus(solver.ctx),
-                // 6:=> s.SUNAdaptController_H0321(ctx.ctx),
-                // 7:=> s.SUNAdaptController_H0211(ctx.ctx),
-                // 8:=> s.SUNAdaptController_H211(ctx.ctx),
-                // 9:=> s.SUNAdaptController_H312(ctx.ctx),
+                0 => a.SUNAdaptController_PID(solver.ctx),
+                1 => a.SUNAdaptController_PI(solver.ctx),
+                2 => a.SUNAdaptController_I(solver.ctx),
+                3 => a.SUNAdaptController_ExpGus(solver.ctx),
+                4 => a.SUNAdaptController_ImpGus(solver.ctx),
+                5 => a.SUNAdaptController_ImExGus(solver.ctx),
+                // 6:=> a.SUNAdaptController_H0321(ctx.ctx),
+                // 7:=> a.SUNAdaptController_H0211(ctx.ctx),
+                // 8:=> a.SUNAdaptController_H211(ctx.ctx),
+                // 9:=> a.SUNAdaptController_H312(ctx.ctx),
                 else => return SolverError.ArgOutOfRange,
             };
-            try checkedCall(s.ARKodeSetAdaptController, .{ solver.arkode_mem, solver.C });
+            try checkedCall(a.ARKodeSetAdaptController, .{ solver.arkode_mem, solver.C });
         }
 
         // Specify linearly implicit non-time-dependent RHS
         if (opts.linear) {
-            try checkedCall(s.ARKodeSetLinear, .{ solver.arkode_mem, 0 });
+            try checkedCall(a.ARKodeSetLinear, .{ solver.arkode_mem, 0 });
         }
 
         // Set max steps between outputs
-        try checkedCall(s.ARKodeSetMaxNumSteps, .{ solver.arkode_mem, opts.maxsteps });
+        try checkedCall(a.ARKodeSetMaxNumSteps, .{ solver.arkode_mem, opts.maxsteps });
 
         // Set stopping time
-        try checkedCall(s.ARKodeSetStopTime, .{ solver.arkode_mem, domain.tf });
+        try checkedCall(a.ARKodeSetStopTime, .{ solver.arkode_mem, domain.tf });
 
         return solver;
     }
@@ -704,37 +699,37 @@ const Solver = struct {
         var nfi_ls: c_long = undefined;
         var nJv: c_long = undefined;
 
-        checkedCall(s.ARKodeGetNumSteps, .{ self.arkode_mem, &nst }) catch {
+        checkedCall(a.ARKodeGetNumSteps, .{ self.arkode_mem, &nst }) catch {
             std.log.err("Unable to ARKodeGetNumSteps", .{});
         };
-        checkedCall(s.ARKodeGetNumStepAttempts, .{ self.arkode_mem, &nst_a }) catch {
+        checkedCall(a.ARKodeGetNumStepAttempts, .{ self.arkode_mem, &nst_a }) catch {
             std.log.err("Unable to ARKodeGetNumStepAttempts", .{});
         };
-        checkedCall(s.ARKodeGetNumErrTestFails, .{ self.arkode_mem, &netf }) catch {
+        checkedCall(a.ARKodeGetNumErrTestFails, .{ self.arkode_mem, &netf }) catch {
             std.log.err("Unable to ARKodeGetNumErrTestFails", .{});
         };
-        checkedCall(s.ARKodeGetNumRhsEvals, .{ self.arkode_mem, 1, &nfi }) catch {
+        checkedCall(a.ARKodeGetNumRhsEvals, .{ self.arkode_mem, 1, &nfi }) catch {
             std.log.err("Unable to ARKodeGetNumRhsEvals", .{});
         };
-        checkedCall(s.ARKodeGetNumNonlinSolvIters, .{ self.arkode_mem, &nni }) catch {
+        checkedCall(a.ARKodeGetNumNonlinSolvIters, .{ self.arkode_mem, &nni }) catch {
             std.log.err("Unable to ARKodeGetNumNonlinSolvIters", .{});
         };
-        checkedCall(s.ARKodeGetNumNonlinSolvConvFails, .{ self.arkode_mem, &ncfn }) catch {
+        checkedCall(a.ARKodeGetNumNonlinSolvConvFails, .{ self.arkode_mem, &ncfn }) catch {
             std.log.err("Unable to ARKodeGetNumNonlinSolvConvFails", .{});
         };
-        checkedCall(s.ARKodeGetNumLinIters, .{ self.arkode_mem, &nli }) catch {
+        checkedCall(a.ARKodeGetNumLinIters, .{ self.arkode_mem, &nli }) catch {
             std.log.err("Unable to ARKodeGetNumLinIters", .{});
         };
-        checkedCall(s.ARKodeGetNumLinConvFails, .{ self.arkode_mem, &nlcf }) catch {
+        checkedCall(a.ARKodeGetNumLinConvFails, .{ self.arkode_mem, &nlcf }) catch {
             std.log.err("Unable to ARKodeGetNumLinConvFails", .{});
         };
-        checkedCall(s.ARKodeGetNumLinSolvSetups, .{ self.arkode_mem, &nsetups }) catch {
+        checkedCall(a.ARKodeGetNumLinSolvSetups, .{ self.arkode_mem, &nsetups }) catch {
             std.log.err("Unable to ARKodeGetNumLinSolvSetups", .{});
         };
-        checkedCall(s.ARKodeGetNumLinRhsEvals, .{ self.arkode_mem, &nfi_ls }) catch {
+        checkedCall(a.ARKodeGetNumLinRhsEvals, .{ self.arkode_mem, &nfi_ls }) catch {
             std.log.err("Unable to ARKodeGetNumLinRhsEvals", .{});
         };
-        checkedCall(s.ARKodeGetNumJtimesEvals, .{ self.arkode_mem, &nJv }) catch {
+        checkedCall(a.ARKodeGetNumJtimesEvals, .{ self.arkode_mem, &nJv }) catch {
             std.log.err("Unable to ARKodeGetNumJtimesEvals", .{});
         };
 
@@ -753,8 +748,8 @@ const Solver = struct {
         std.log.info("", .{});
 
         // Compute average nls iters per step attempt and ls iters per nls iter
-        const avgnli: s.sunrealtype = @as(s.sunrealtype, @floatFromInt(nni)) / @as(s.sunrealtype, @floatFromInt(nst_a));
-        const avgli: s.sunrealtype = @as(s.sunrealtype, @floatFromInt(nli)) / @as(s.sunrealtype, @floatFromInt(nni));
+        const avgnli: a.sunrealtype = @as(a.sunrealtype, @floatFromInt(nni)) / @as(a.sunrealtype, @floatFromInt(nst_a));
+        const avgli: a.sunrealtype = @as(a.sunrealtype, @floatFromInt(nli)) / @as(a.sunrealtype, @floatFromInt(nni));
         std.log.info("  Avg NLS iters per step attempt = {d:.6}", .{avgnli});
         std.log.info("  Avg LS iters per NLS iter      = {d:.6}", .{avgli});
         std.log.info("", .{});
@@ -764,10 +759,10 @@ const Solver = struct {
             var npe: c_long = undefined;
             var nps: c_long = undefined;
 
-            checkedCall(s.ARKodeGetNumPrecEvals, .{ self.arkode_mem, &npe }) catch {
+            checkedCall(a.ARKodeGetNumPrecEvals, .{ self.arkode_mem, &npe }) catch {
                 std.log.err("Unable to ARKodeGetNumPrecEvals", .{});
             };
-            checkedCall(s.ARKodeGetNumPrecSolves, .{ self.arkode_mem, &nps }) catch {
+            checkedCall(a.ARKodeGetNumPrecSolves, .{ self.arkode_mem, &nps }) catch {
                 std.log.err("Unable to ARKodeGetNumPrecSolves", .{});
             };
 
@@ -793,12 +788,12 @@ const Solver = struct {
         // --------------------
         // Clean up and return
         // --------------------
-        s.ARKodeFree(&self.arkode_mem); // Free integrator memory
-        _ = s.SUNLinSolFree(self.LS); // Free linear solver
-        s.N_VDestroy(self.u); // Free vectors
-        s.N_VDestroy(self.d); // Free vectors
-        _ = s.SUNAdaptController_Destroy(self.C); // Free time adaptivity controller
-        _ = s.SUNContext_Free(&self.ctx); // Free context
+        a.ARKodeFree(&self.arkode_mem); // Free integrator memory
+        _ = a.SUNLinSolFree(self.LS); // Free linear solver
+        a.N_VDestroy(self.u); // Free vectors
+        a.N_VDestroy(self.d); // Free vectors
+        _ = a.SUNAdaptController_Destroy(self.C); // Free time adaptivity controller
+        _ = a.SUNContext_Free(&self.ctx); // Free context
 
         allocator.destroy(self);
     }
@@ -812,13 +807,13 @@ fn OpenOutput(solver: *const Solver) void {
     }
 }
 
-fn WriteOutput(solver: *const Solver, t: s.sunrealtype) void {
+fn WriteOutput(solver: *const Solver, t: a.sunrealtype) void {
     if (solver.options.output > 0) {
         const udata: *const Domain = solver.domain;
 
         // Compute rms norm of the state
-        const urms: s.sunrealtype = std.math.sqrt(
-            s.N_VDotProd(solver.u, solver.u) / @as(f64, @floatFromInt(udata.size())),
+        const urms: a.sunrealtype = std.math.sqrt(
+            a.N_VDotProd(solver.u, solver.u) / @as(f64, @floatFromInt(udata.size())),
         );
 
         // Output current status
@@ -835,13 +830,18 @@ fn CloseOutput(solver: *const Solver) void {
 }
 
 const Plotter = struct {
+    allocator: std.mem.Allocator,
+    io: std.Io,
     mesh_builder: VtuWriter.UnstructuredMeshBuilder,
     num_plotted: usize = 0,
-    series_file: ?std.fs.File = null,
-    file_writer: ?std.fs.File.Writer = null,
+    series_file: ?std.Io.File = null,
 
-    fn init(allocator: std.mem.Allocator, domain: *const Domain) !Plotter {
-        var self = Plotter{ .mesh_builder = VtuWriter.UnstructuredMeshBuilder.init(allocator) };
+    fn init(allocator: std.mem.Allocator, io: std.Io, domain: *const Domain) !Plotter {
+        var self = Plotter{
+            .allocator = allocator,
+            .io = io,
+            .mesh_builder = VtuWriter.UnstructuredMeshBuilder.init(allocator),
+        };
 
         try self.mesh_builder.reservePoints(domain.size());
         try self.mesh_builder.reserveCells(.VTK_HEXAHEDRON, @intCast((domain.nx - 1) * (domain.ny - 1) * (domain.nz - 1)));
@@ -875,19 +875,24 @@ const Plotter = struct {
         return self;
     }
 
-    fn startSeries(self: *Plotter) !void {
-        const cwd = std.fs.cwd();
-        self.series_file = try cwd.createFile("heat3d.vtu.series", .{});
-        self.file_writer = self.series_file.?.writer(&.{});
-        const file = &self.file_writer.?.interface;
-        try file.print("{{\n  \"file-series-version\" : \"1.0\",\n  \"files\" : [\n", .{});
+    fn writeSeriesChunk(self: *Plotter, bytes: []const u8) !void {
+        const file = self.series_file orelse return error.SeriesFileNotOpen;
+        var buf: [256]u8 = undefined;
+        var writer = file.writerStreaming(self.io, &buf);
+        try writer.interface.writeAll(bytes);
+        try writer.interface.flush();
     }
 
-    fn plot(self: *Plotter, allocator: std.mem.Allocator, u: s.N_Vector, filename: []const u8) !void {
+    fn startSeries(self: *Plotter) !void {
+        self.series_file = try std.Io.Dir.cwd().createFile(self.io, "heat3d.vtu.series", .{});
+        try self.writeSeriesChunk("{\n  \"file-series-version\" : \"1.0\",\n  \"files\" : [\n");
+    }
+
+    fn plot(self: *Plotter, u: a.N_Vector, filename: []const u8) !void {
         const mesh = self.mesh_builder.getUnstructuredMesh();
 
-        const u_array = checkedMemOp(s.N_VGetArrayPointer, .{u}) catch unreachable;
-        const u_array_size = s.N_VGetLocalLength(u);
+        const u_array = checkedMemOp(a.N_VGetArrayPointer, .{u}) catch unreachable;
+        const u_array_size = a.N_VGetLocalLength(u);
         var point_data: []const f64 = undefined;
         point_data.ptr = u_array;
         point_data.len = @intCast(u_array_size);
@@ -895,10 +900,15 @@ const Plotter = struct {
             .{ "Temperature", VtuWriter.DataSetType.PointData, 1, point_data },
         };
 
-        try VtuWriter.writeVtu(allocator, filename, mesh, &data_sets, .rawbinarycompressed);
-        if (self.series_file) |_| {
-            const file = &self.file_writer.?.interface;
-            try file.print("    {{ \"name\" : \"{s}\", \"time\" : {} }},\n", .{ filename, self.num_plotted });
+        try VtuWriter.writeVtu(self.allocator, self.io, filename, mesh, &data_sets, .rawbinarycompressed);
+        if (self.series_file != null) {
+            var line_buf: [256]u8 = undefined;
+            const line = try std.fmt.bufPrint(
+                &line_buf,
+                "    {{ \"name\" : \"{s}\", \"time\" : {} }},\n",
+                .{ filename, self.num_plotted },
+            );
+            try self.writeSeriesChunk(line);
         }
         self.num_plotted += 1;
     }
@@ -907,54 +917,49 @@ const Plotter = struct {
         self.mesh_builder.deinit();
 
         if (self.series_file) |series_file| {
-            const file = &self.file_writer.?.interface;
-            file.print("  ]\n}}\n", .{}) catch unreachable;
-            series_file.close();
+            self.writeSeriesChunk("  ]\n}\n") catch {};
+            series_file.close(self.io);
         }
     }
 };
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    const allocator = gpa.allocator();
-    defer {
-        const deinit_status = gpa.deinit();
-        if (deinit_status == .leak) std.log.warn("memory leaked!", .{});
-    }
+pub fn main(init: std.process.Init) !void {
+    const allocator = init.gpa;
+    const io = init.io;
 
     var domain = Domain.init(1.0, 32);
     domain.printData();
 
-    const solver = try Solver.init(allocator, &domain, Solver.Options.default());
+    const solver = try Solver.init(allocator, io, &domain, Solver.Options.default());
     defer solver.deinit(allocator);
     solver.printOptions();
 
-    var plotter = try Plotter.init(allocator, solver.domain);
+    var plotter = try Plotter.init(allocator, io, solver.domain);
     defer plotter.deinit();
     try plotter.startSeries();
     var strbuf: [256]u8 = undefined;
 
-    var t: s.sunrealtype = 0;
-    const dTout: s.sunrealtype = solver.domain.tf / @as(f64, @floatFromInt(solver.options.nout));
-    var tout: s.sunrealtype = dTout;
+    var t: a.sunrealtype = 0;
+    const dTout: a.sunrealtype = solver.domain.tf / @as(f64, @floatFromInt(solver.options.nout));
+    var tout: a.sunrealtype = dTout;
 
     // Initial output
     OpenOutput(solver);
     WriteOutput(solver, t);
     var filename = try std.fmt.bufPrint(&strbuf, "heat3d_t{d:0>10.6}.vtu", .{t});
-    try plotter.plot(allocator, solver.u, filename);
+    try plotter.plot(solver.u, filename);
 
-    var timer = try std.time.Timer.start();
     for (0..@intCast(solver.options.nout)) |_| {
-        try checkedCall(s.ARKodeEvolve, .{ solver.arkode_mem, tout, solver.u, &t, s.ARK_NORMAL });
+        const start = std.Io.Timestamp.now(io, .awake);
+        try checkedCall(a.ARKodeEvolve, .{ solver.arkode_mem, tout, solver.u, &t, a.ARK_NORMAL });
 
         // Update timer
-        solver.evolvetime += @as(f64, @floatFromInt(timer.lap())) / std.time.ns_per_s;
+        solver.evolvetime += elapsedSecondsSince(io, start);
 
         // Output solution and error
         WriteOutput(solver, t);
         filename = try std.fmt.bufPrint(&strbuf, "heat3d_t{d:0>10.6}.vtu", .{t});
-        try plotter.plot(allocator, solver.u, filename);
+        try plotter.plot(solver.u, filename);
 
         // Update output time
         tout += dTout;
@@ -978,12 +983,10 @@ pub const std_options: std.Options = .{
 };
 
 test "index2coord" {
-    var seed: u64 = undefined;
-    try std.posix.getrandom(std.mem.asBytes(&seed));
-    var prng = std.Random.DefaultPrng.init(seed);
+    var prng = std.Random.DefaultPrng.init(0);
     const rand = prng.random();
 
-    const N = rand.intRangeAtMost(s.sunindextype, 101, 201);
+    const N = rand.intRangeAtMost(a.sunindextype, 101, 201);
     const p = Domain.init(1.0, N);
 
     for (0..100) |_| {
@@ -995,7 +998,7 @@ test "index2coord" {
 }
 
 test "index iteration" {
-    const p = Domain.init(201);
+    const p = Domain.init(1.0, 201);
 
     var i: isize = 0;
     var x_prev = i - 1;
