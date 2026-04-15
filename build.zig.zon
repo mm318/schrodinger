@@ -3,16 +3,16 @@
     .version = "0.0.0",
     .fingerprint = 0x7500392784adb00f, // Changing this has security and trust implications.
 
-    .minimum_zig_version = "0.15.1",
+    .minimum_zig_version = "0.16.0",
 
     .dependencies = .{
-        .arkode = .{
-            .url = "https://github.com/mm318/arkode-zig/archive/ed112bb532831e57d834630d1ed63623a44ac978.zip",
-            .hash = "arkode-6.5.0-5YSPKLxVowDuviwwDp5fOGgG1vWT5kZfzeGC61_9PCp9",
+        .arkode_zig = .{
+            .url = "https://github.com/mm318/arkode-zig/archive/96efb240f377bc11c2cab1445d926ec9e5180f94.tar.gz",
+            .hash = "arkode_zig-6.5.0-XTfRtEjupQCln229535KQgfIxVetkCX3RyKV4bNpHIjo",
         },
         .vtu_writer = .{
-            .url = "https://github.com/mm318/vtu-writer/archive/12ea9642a4bbde24775f2845ba0e934d008268e0.zip",
-            .hash = "vtu_writer-0.0.1-jCl2qVx9AAAjKzNuCJJ8TT0g1Lf6O5dqHn4wWME-VoRr",
+            .url = "https://github.com/mm318/vtu-writer/archive/f163bed9737d30c48ec0cb8dc94bc23d128309d4.tar.gz",
+            .hash = "vtu_writer-0.0.1-jCl2qaZ9AABW8hXP8xFpjyICdF75Szn-LV-YvBt8qdK_",
         },
     },
 
