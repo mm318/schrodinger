@@ -1,2 +1,6 @@
 .zig-cache/
+zig-pkg/
 zig-out/
+
+*.vtu
+*.vtu.series
