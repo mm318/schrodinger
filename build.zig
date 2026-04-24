@@ -4,58 +4,39 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const arkode_zig_dep = b.dependency("arkode_zig", .{
+    const mfem_dep = b.dependency("mfem", .{
         .target = target,
         .optimize = optimize,
     });
-    const vtu_dep = b.dependency("vtu_writer", .{
+    const arkode_dep = mfem_dep.builder.dependency("arkode_zig", .{
         .target = target,
         .optimize = optimize,
     });
 
-    const arkode_zig_mod = arkode_zig_dep.module("arkode-zig");
-
-    // We will create a module for our main entrypoint
     const exe_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
+        .link_libcpp = true,
     });
-    exe_mod.addImport("vtu_writer", vtu_dep.module("vtu_writer"));
-    exe_mod.addImport("arkode-zig", arkode_zig_mod);
+    exe_mod.addImport("cmfem", mfem_dep.module("cmfem"));
+    exe_mod.addImport("arkode-zig", arkode_dep.module("arkode-zig"));
 
-    // This creates another `std.Build.Step.Compile` that builds an executable
     const exe = b.addExecutable(.{
         .name = "schrodinger",
         .root_module = exe_mod,
     });
 
-    // This declares intent for the executable to be installed into the
-    // standard location when the user invokes the "install" step (the default
-    // step when running `zig build`).
     b.installArtifact(exe);
 
-    // This *creates* a Run step in the build graph, to be executed when another
-    // step is evaluated that depends on it. The next line below will establish
-    // such a dependency.
     const run_cmd = b.addRunArtifact(exe);
-
-    // By making the run step depend on the install step, it will be run from the
-    // installation directory rather than directly from within the cache directory.
-    // This is not necessary, however, if the application depends on other installed
-    // files, this ensures they will be present and in the expected location.
     run_cmd.step.dependOn(b.getInstallStep());
 
-    // This allows the user to pass arguments to the application in the build
-    // command itself, like this: `zig build run -- arg1 arg2 etc`
     if (b.args) |args| {
         run_cmd.addArgs(args);
     }
 
-    // This creates a build step. It will be visible in the `zig build --help` menu,
-    // and can be selected like this: `zig build run`
-    // This will evaluate the `run` step rather than the default, which is "install".
     const run_step = b.step("run", "Run the app");
     run_step.dependOn(&run_cmd.step);
 }
