@@ -8,21 +8,29 @@ const T0: f64 = 0.0;
 const Tf: f64 = 0.006;
 const reltol: f64 = 1.0e-6;
 const abstol: f64 = 1.0e-9;
-const internal_substeps: usize = 10;
+const internal_substeps: usize = 40;
 
-const fem_order: c_int = 2;
+const fem_order: c_int = 1;
 const base_uniform_refs: usize = 0;
-const coeff_refiner_max_elements: c_longlong = 300_000;
+const coeff_refiner_max_elements: c_longlong = 0;
 const coeff_refiner_threshold: f64 = 0.03;
 const coeff_refiner_nc_limit: c_int = 0;
+
+const domain_x: f64 = 1.0;
+const domain_y: f64 = 1.0;
+const domain_z: f64 = 1.0;
+const two_pi: f64 = 2.0 * std.math.pi;
 
 const packet_radius: f64 = 0.1;
 const packet_x0: f64 = 0.2;
 const packet_y0: f64 = 0.5;
 const packet_z0: f64 = 0.5;
-const packet_kx: f64 = 157.0;
-const packet_ky: f64 = 0.0;
-const packet_kz: f64 = 0.0;
+const packet_mode_x: f64 = 25.0;
+const packet_mode_y: f64 = 0.0;
+const packet_mode_z: f64 = 0.0;
+const packet_kx: f64 = two_pi * packet_mode_x;
+const packet_ky: f64 = two_pi * packet_mode_y;
+const packet_kz: f64 = two_pi * packet_mode_z;
 const packet_group_velocity_x: f64 = packet_kx;
 
 const potential_center_x: f64 = 0.5;
@@ -35,13 +43,13 @@ const potential_k = potential_reference_abs * potential_reference_radius * poten
 const singularity_radius = @sqrt(potential_k / center_potential_abs);
 const singularity_radius2 = singularity_radius * singularity_radius;
 
-const inline_tet_mesh =
+const inline_mesh =
     \\MFEM INLINE mesh v1.0
     \\
-    \\type = tet
-    \\nx = 52
-    \\ny = 26
-    \\nz = 26
+    \\type = hex
+    \\nx = 104
+    \\ny = 52
+    \\nz = 52
     \\sx = 1.0
     \\sy = 1.0
     \\sz = 1.0
@@ -66,6 +74,27 @@ fn sqr(x: f64) f64 {
 /// Reads one coordinate axis from an MFEM point vector.
 fn pointCoord(x: ?*const cm.CMFEM_Vector, axis: c_int) f64 {
     return cm.CMFEM_Vector_Get(x orelse @panic("null coordinate vector"), axis);
+}
+
+/// Returns the minimum-image offset on a periodic interval.
+fn periodicOffset(coord: f64, center: f64, length: f64) f64 {
+    const delta = coord - center;
+    return delta - length * @floor(delta / length + 0.5);
+}
+
+/// Converts circular weighted sums back to a coordinate in [0, length).
+fn circularMeanCoord(sum_sin: f64, sum_cos: f64, length: f64) f64 {
+    if (sqr(sum_sin) + sqr(sum_cos) <= 1.0e-30) {
+        return 0.0;
+    }
+
+    var angle = std.math.atan2(sum_sin, sum_cos);
+    if (angle < 0.0) {
+        angle += two_pi;
+    }
+
+    const coord = length * angle / two_pi;
+    return if (coord >= length) coord - length else coord;
 }
 
 /// Computes the squared distance from a point to the potential center.
@@ -93,7 +122,9 @@ fn packetRealAtPoint(x: ?*const cm.CMFEM_Vector) f64 {
     const xcoord = pointCoord(x, 0);
     const ycoord = pointCoord(x, 1);
     const zcoord = pointCoord(x, 2);
-    const r2 = sqr(xcoord - packet_x0) + sqr(ycoord - packet_y0) + sqr(zcoord - packet_z0);
+    const r2 = sqr(periodicOffset(xcoord, packet_x0, domain_x)) +
+        sqr(periodicOffset(ycoord, packet_y0, domain_y)) +
+        sqr(periodicOffset(zcoord, packet_z0, domain_z));
     const envelope = @exp(-r2 / (2.0 * packet_radius * packet_radius));
     const phase = packet_kx * xcoord + packet_ky * ycoord + packet_kz * zcoord;
     return envelope * @cos(phase);
@@ -104,7 +135,9 @@ fn packetImagAtPoint(x: ?*const cm.CMFEM_Vector) f64 {
     const xcoord = pointCoord(x, 0);
     const ycoord = pointCoord(x, 1);
     const zcoord = pointCoord(x, 2);
-    const r2 = sqr(xcoord - packet_x0) + sqr(ycoord - packet_y0) + sqr(zcoord - packet_z0);
+    const r2 = sqr(periodicOffset(xcoord, packet_x0, domain_x)) +
+        sqr(periodicOffset(ycoord, packet_y0, domain_y)) +
+        sqr(periodicOffset(zcoord, packet_z0, domain_z));
     const envelope = @exp(-r2 / (2.0 * packet_radius * packet_radius));
     const phase = packet_kx * xcoord + packet_ky * ycoord + packet_kz * zcoord;
     return envelope * @sin(phase);
@@ -263,28 +296,29 @@ const Simulation = struct {
         std.debug.print("\n3D Schrödinger FEM setup:\n", .{});
         var setup_timer = SetupTimer.init(io);
 
-        // Build the base tetrahedral mesh before localized coefficient refinement.
+        // Build the base structured mesh before localized coefficient refinement.
         var mesh = cm.CMFEM_Mesh_New() orelse return error.SetupFailed;
         errdefer cm.CMFEM_Mesh_Delete(mesh);
-        cm.CMFEM_Mesh_Load(mesh, inline_tet_mesh, 1, 0, 0);
+        cm.CMFEM_Mesh_Load(mesh, inline_mesh, 1, 0, 0);
 
         for (0..base_uniform_refs) |_| {
             cm.CMFEM_Mesh_UniformRefinement(mesh);
         }
-        cm.CMFEM_Mesh_FinalizeTetMesh(mesh, 1, 1, 1);
-        setup_timer.print("base tet mesh");
+        setup_timer.print("base mesh");
 
-        // Refine around the clamped singular potential so the center is resolved.
-        const indicator = cm.CMFEM_FunctionCoefficient_New(indicatorCallback, null) orelse return error.SetupFailed;
-        defer cm.CMFEM_FunctionCoefficient_Delete(indicator);
-        const coeff_refiner = cm.CMFEM_CoefficientRefiner_NewFc(indicator, fem_order) orelse return error.SetupFailed;
-        defer cm.CMFEM_CoefficientRefiner_Delete(coeff_refiner);
-        cm.CMFEM_CoefficientRefiner_SetIntRuleOrder(coeff_refiner, 2 * fem_order + 4);
-        cm.CMFEM_CoefficientRefiner_SetMaxElements(coeff_refiner, coeff_refiner_max_elements);
-        cm.CMFEM_CoefficientRefiner_SetThreshold(coeff_refiner, coeff_refiner_threshold);
-        cm.CMFEM_CoefficientRefiner_SetNCLimit(coeff_refiner, coeff_refiner_nc_limit);
-        _ = cm.CMFEM_CoefficientRefiner_PreprocessMesh(coeff_refiner, mesh);
-        setup_timer.print("center refinement");
+        if (coeff_refiner_max_elements > 0) {
+            // Refine around the clamped singular potential so the center is resolved.
+            const indicator = cm.CMFEM_FunctionCoefficient_New(indicatorCallback, null) orelse return error.SetupFailed;
+            defer cm.CMFEM_FunctionCoefficient_Delete(indicator);
+            const coeff_refiner = cm.CMFEM_CoefficientRefiner_NewFc(indicator, fem_order) orelse return error.SetupFailed;
+            defer cm.CMFEM_CoefficientRefiner_Delete(coeff_refiner);
+            cm.CMFEM_CoefficientRefiner_SetIntRuleOrder(coeff_refiner, 2 * fem_order + 4);
+            cm.CMFEM_CoefficientRefiner_SetMaxElements(coeff_refiner, coeff_refiner_max_elements);
+            cm.CMFEM_CoefficientRefiner_SetThreshold(coeff_refiner, coeff_refiner_threshold);
+            cm.CMFEM_CoefficientRefiner_SetNCLimit(coeff_refiner, coeff_refiner_nc_limit);
+            _ = cm.CMFEM_CoefficientRefiner_PreprocessMesh(coeff_refiner, mesh);
+            setup_timer.print("center refinement");
+        }
 
         // Convert opposite cube faces to periodic identifications.
         const periodic_mesh = cm.CMFEM_Mesh_NewPeriodic(mesh, 1.0, 1.0, 1.0) orelse return error.SetupFailed;
@@ -330,9 +364,9 @@ const Simulation = struct {
 
         const ndofs = @as(usize, @intCast(cm.CMFEM_FiniteElementSpace_GetTrueVSize(fes)));
 
-        // The consistent mass solve is too expensive here, while row-sum lumping is
-        // not valid for standard quadratic tetrahedra. Use the positive diagonal as
-        // the diagonal mass for both evolution and diagnostics.
+        // A consistent mass solve inside every RHS evaluation is too expensive
+        // here. Use the positive diagonal mass approximation for both evolution
+        // and diagnostics so the dynamics and reported norm stay aligned.
         const mass_diag = cm.CMFEM_Vector_NewSize(@intCast(ndofs)) orelse return error.SetupFailed;
         errdefer cm.CMFEM_Vector_Delete(mass_diag);
         cm.CMFEM_SparseMatrix_GetDiag(mass_mat, mass_diag);
@@ -525,14 +559,14 @@ const Simulation = struct {
         const peak_amp = self.updateGridFunctionsFromStateVectors();
 
         var norm: f64 = 0.0;
-        var sum_x: f64 = 0.0;
-        var sum_y: f64 = 0.0;
-        var sum_z: f64 = 0.0;
-        var sum_x2: f64 = 0.0;
-        var sum_y2: f64 = 0.0;
-        var sum_z2: f64 = 0.0;
+        var sum_x_sin: f64 = 0.0;
+        var sum_x_cos: f64 = 0.0;
+        var sum_y_sin: f64 = 0.0;
+        var sum_y_cos: f64 = 0.0;
+        var sum_z_sin: f64 = 0.0;
+        var sum_z_cos: f64 = 0.0;
 
-        // Accumulate diagonal-mass weighted first and second coordinate moments.
+        // Accumulate diagonal-mass weighted circular coordinate moments.
         for (0..self.ndofs) |i| {
             const dof = @as(c_int, @intCast(i));
             const real_value = cm.CMFEM_Vector_Get(self.state_real, dof);
@@ -544,12 +578,15 @@ const Simulation = struct {
             const z = cm.CMFEM_Vector_Get(self.z_coord, dof);
 
             norm += weighted_prob;
-            sum_x += x * weighted_prob;
-            sum_y += y_coord * weighted_prob;
-            sum_z += z * weighted_prob;
-            sum_x2 += x * x * weighted_prob;
-            sum_y2 += y_coord * y_coord * weighted_prob;
-            sum_z2 += z * z * weighted_prob;
+            const x_angle = two_pi * x / domain_x;
+            const y_angle = two_pi * y_coord / domain_y;
+            const z_angle = two_pi * z / domain_z;
+            sum_x_sin += @sin(x_angle) * weighted_prob;
+            sum_x_cos += @cos(x_angle) * weighted_prob;
+            sum_y_sin += @sin(y_angle) * weighted_prob;
+            sum_y_cos += @cos(y_angle) * weighted_prob;
+            sum_z_sin += @sin(z_angle) * weighted_prob;
+            sum_z_cos += @cos(z_angle) * weighted_prob;
         }
 
         if (norm <= 0.0) {
@@ -565,22 +602,36 @@ const Simulation = struct {
             };
         }
 
-        // Convert raw moments to means and standard deviations.
-        const x_mean = sum_x / norm;
-        const y_mean = sum_y / norm;
-        const z_mean = sum_z / norm;
-        const x2_mean = sum_x2 / norm;
-        const y2_mean = sum_y2 / norm;
-        const z2_mean = sum_z2 / norm;
+        const x_mean = circularMeanCoord(sum_x_sin, sum_x_cos, domain_x);
+        const y_mean = circularMeanCoord(sum_y_sin, sum_y_cos, domain_y);
+        const z_mean = circularMeanCoord(sum_z_sin, sum_z_cos, domain_z);
+
+        var sum_dx2: f64 = 0.0;
+        var sum_dy2: f64 = 0.0;
+        var sum_dz2: f64 = 0.0;
+        for (0..self.ndofs) |i| {
+            const dof = @as(c_int, @intCast(i));
+            const real_value = cm.CMFEM_Vector_Get(self.state_real, dof);
+            const imag_value = cm.CMFEM_Vector_Get(self.state_imag, dof);
+            const weighted_prob = cm.CMFEM_Vector_Get(self.mass_diag, dof) *
+                (real_value * real_value + imag_value * imag_value);
+            const x = cm.CMFEM_Vector_Get(self.x_coord, dof);
+            const y_coord = cm.CMFEM_Vector_Get(self.y_coord, dof);
+            const z = cm.CMFEM_Vector_Get(self.z_coord, dof);
+
+            sum_dx2 += sqr(periodicOffset(x, x_mean, domain_x)) * weighted_prob;
+            sum_dy2 += sqr(periodicOffset(y_coord, y_mean, domain_y)) * weighted_prob;
+            sum_dz2 += sqr(periodicOffset(z, z_mean, domain_z)) * weighted_prob;
+        }
 
         return .{
             .norm = norm,
             .x_mean = x_mean,
             .y_mean = y_mean,
             .z_mean = z_mean,
-            .sigma_x = @sqrt(@max(0.0, x2_mean - x_mean * x_mean)),
-            .sigma_y = @sqrt(@max(0.0, y2_mean - y_mean * y_mean)),
-            .sigma_z = @sqrt(@max(0.0, z2_mean - z_mean * z_mean)),
+            .sigma_x = @sqrt(sum_dx2 / norm),
+            .sigma_y = @sqrt(sum_dy2 / norm),
+            .sigma_z = @sqrt(sum_dz2 / norm),
             .peak_amp = peak_amp,
         };
     }
