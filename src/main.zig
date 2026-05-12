@@ -1,58 +1,59 @@
 const std = @import("std");
 
 const a = @import("arkode-zig");
-const VtuWriter = @import("vtu_writer");
+const cm = @import("cmfem");
 
-// Grid and simulation size. Odd dimensions keep a cell center exactly at (0.5, 0.5, 0.5).
-const Nx: usize = 101;
-const Ny: usize = 101;
-const Nz: usize = 101;
-const neq: usize = Nx * Ny * Nz;
 const Nt: usize = 100;
+const T0: f64 = 0.0;
+const Tf: f64 = 0.006;
+const reltol: f64 = 1.0e-6;
+const abstol: f64 = 1.0e-9;
+const internal_substeps: usize = 40;
 
-// Domain and initial Gaussian packet parameters.
-const domain_length: f64 = 1.0;
+const fem_order: c_int = 1;
+const base_uniform_refs: usize = 0;
+const coeff_refiner_max_elements: c_longlong = 0;
+const coeff_refiner_threshold: f64 = 0.03;
+const coeff_refiner_nc_limit: c_int = 0;
+
+const domain_x: f64 = 1.0;
+const domain_y: f64 = 1.0;
+const domain_z: f64 = 1.0;
+const two_pi: f64 = 2.0 * std.math.pi;
+
 const packet_radius: f64 = 0.1;
 const packet_x0: f64 = 0.2;
 const packet_y0: f64 = 0.5;
 const packet_z0: f64 = 0.5;
-const packet_kx: f64 = 157.0;
-const packet_ky: f64 = 0.0;
-const packet_kz: f64 = 0.0;
+const packet_mode_x: f64 = 25.0;
+const packet_mode_y: f64 = 0.0;
+const packet_mode_z: f64 = 0.0;
+const packet_kx: f64 = two_pi * packet_mode_x;
+const packet_ky: f64 = two_pi * packet_mode_y;
+const packet_kz: f64 = two_pi * packet_mode_z;
+const packet_group_velocity_x: f64 = packet_kx;
 
-// Central inverse-square potential: V(r) = -k/r^2 around (0.5, 0.5, 0.5).
 const potential_center_x: f64 = 0.5;
 const potential_center_y: f64 = 0.5;
 const potential_center_z: f64 = 0.5;
 const potential_reference_radius: f64 = 0.25;
 const potential_reference_abs: f64 = 5.0e2;
 const center_potential_abs: f64 = 1.6666666666666667e5;
-
-// Time integration controls.
-const T0: f64 = 0.0;
-const Tf: f64 = 0.006;
-const reltol: f64 = 1.0e-6;
-const abstol: f64 = 1.0e-9;
-const internal_substeps: usize = 10;
-
-// Derived spatial factors and complex constants used in the RHS stencil.
-const dx = domain_length / @as(f64, @floatFromInt(Nx));
-const dy = domain_length / @as(f64, @floatFromInt(Ny));
-const dz = domain_length / @as(f64, @floatFromInt(Nz));
-const inv_dx2 = 1.0 / (dx * dx);
-const inv_dy2 = 1.0 / (dy * dy);
-const inv_dz2 = 1.0 / (dz * dz);
-const cell_volume = dx * dy * dz;
-const two = a.Complex.init(2.0, 0.0);
-const i_half = a.Complex.init(0.0, 0.5);
-const inv_dx2_c = a.Complex.init(inv_dx2, 0.0);
-const inv_dy2_c = a.Complex.init(inv_dy2, 0.0);
-const inv_dz2_c = a.Complex.init(inv_dz2, 0.0);
-
-// k is set so V(r=0.25) = -500. The singularity is clamped so V_min = -center_potential_abs.
 const potential_k = potential_reference_abs * potential_reference_radius * potential_reference_radius;
 const singularity_radius = @sqrt(potential_k / center_potential_abs);
 const singularity_radius2 = singularity_radius * singularity_radius;
+
+const inline_mesh =
+    \\MFEM INLINE mesh v1.0
+    \\
+    \\type = hex
+    \\nx = 104
+    \\ny = 52
+    \\nz = 52
+    \\sx = 1.0
+    \\sy = 1.0
+    \\sz = 1.0
+;
 
 const Diagnostics = struct {
     norm: f64,
@@ -65,285 +66,635 @@ const Diagnostics = struct {
     peak_amp: f64,
 };
 
-inline fn idx(ix: usize, iy: usize, iz: usize) usize {
-    return (iz * Ny + iy) * Nx + ix;
+/// Returns the square of a scalar value.
+fn sqr(x: f64) f64 {
+    return x * x;
 }
 
-fn potentialAt(xcoord: f64, ycoord: f64, zcoord: f64) f64 {
-    const rx = xcoord - potential_center_x;
-    const ry = ycoord - potential_center_y;
-    const rz = zcoord - potential_center_z;
-    const r2 = rx * rx + ry * ry + rz * rz;
-    const safe_r2 = @max(r2, singularity_radius2);
-    return -potential_k / safe_r2;
+/// Reads one coordinate axis from an MFEM point vector.
+fn pointCoord(x: ?*const cm.CMFEM_Vector, axis: c_int) f64 {
+    return cm.CMFEM_Vector_Get(x orelse @panic("null coordinate vector"), axis);
 }
 
-const Plotter = struct {
-    allocator: std.mem.Allocator,
+/// Returns the minimum-image offset on a periodic interval.
+fn periodicOffset(coord: f64, center: f64, length: f64) f64 {
+    const delta = coord - center;
+    return delta - length * @floor(delta / length + 0.5);
+}
+
+/// Converts circular weighted sums back to a coordinate in [0, length).
+fn circularMeanCoord(sum_sin: f64, sum_cos: f64, length: f64) f64 {
+    if (sqr(sum_sin) + sqr(sum_cos) <= 1.0e-30) {
+        return 0.0;
+    }
+
+    var angle = std.math.atan2(sum_sin, sum_cos);
+    if (angle < 0.0) {
+        angle += two_pi;
+    }
+
+    const coord = length * angle / two_pi;
+    return if (coord >= length) coord - length else coord;
+}
+
+/// Computes the squared distance from a point to the potential center.
+fn radius2FromPoint(x: ?*const cm.CMFEM_Vector) f64 {
+    const xcoord = pointCoord(x, 0);
+    const ycoord = pointCoord(x, 1);
+    const zcoord = pointCoord(x, 2);
+    return sqr(xcoord - potential_center_x) +
+        sqr(ycoord - potential_center_y) +
+        sqr(zcoord - potential_center_z);
+}
+
+/// Evaluates the attractive inverse-square potential with a clamped core.
+fn potentialAtPoint(x: ?*const cm.CMFEM_Vector) f64 {
+    return -potential_k / @max(radius2FromPoint(x), singularity_radius2);
+}
+
+/// Evaluates the positive refinement indicator matching the potential strength.
+fn indicatorAtPoint(x: ?*const cm.CMFEM_Vector) f64 {
+    return potential_k / @max(radius2FromPoint(x), singularity_radius2);
+}
+
+/// Evaluates the real part of the initial Gaussian wave packet.
+fn packetRealAtPoint(x: ?*const cm.CMFEM_Vector) f64 {
+    const xcoord = pointCoord(x, 0);
+    const ycoord = pointCoord(x, 1);
+    const zcoord = pointCoord(x, 2);
+    const r2 = sqr(periodicOffset(xcoord, packet_x0, domain_x)) +
+        sqr(periodicOffset(ycoord, packet_y0, domain_y)) +
+        sqr(periodicOffset(zcoord, packet_z0, domain_z));
+    const envelope = @exp(-r2 / (2.0 * packet_radius * packet_radius));
+    const phase = packet_kx * xcoord + packet_ky * ycoord + packet_kz * zcoord;
+    return envelope * @cos(phase);
+}
+
+/// Evaluates the imaginary part of the initial Gaussian wave packet.
+fn packetImagAtPoint(x: ?*const cm.CMFEM_Vector) f64 {
+    const xcoord = pointCoord(x, 0);
+    const ycoord = pointCoord(x, 1);
+    const zcoord = pointCoord(x, 2);
+    const r2 = sqr(periodicOffset(xcoord, packet_x0, domain_x)) +
+        sqr(periodicOffset(ycoord, packet_y0, domain_y)) +
+        sqr(periodicOffset(zcoord, packet_z0, domain_z));
+    const envelope = @exp(-r2 / (2.0 * packet_radius * packet_radius));
+    const phase = packet_kx * xcoord + packet_ky * ycoord + packet_kz * zcoord;
+    return envelope * @sin(phase);
+}
+
+/// C callback used by MFEM coefficients to project the x coordinate.
+fn xCoordCallback(x: ?*const cm.CMFEM_Vector, context: ?*anyopaque) callconv(.c) f64 {
+    _ = context;
+    return pointCoord(x, 0);
+}
+
+/// C callback used by MFEM coefficients to project the y coordinate.
+fn yCoordCallback(x: ?*const cm.CMFEM_Vector, context: ?*anyopaque) callconv(.c) f64 {
+    _ = context;
+    return pointCoord(x, 1);
+}
+
+/// C callback used by MFEM coefficients to project the z coordinate.
+fn zCoordCallback(x: ?*const cm.CMFEM_Vector, context: ?*anyopaque) callconv(.c) f64 {
+    _ = context;
+    return pointCoord(x, 2);
+}
+
+/// C callback that exposes the real wave-packet profile to MFEM.
+fn packetRealCallback(x: ?*const cm.CMFEM_Vector, context: ?*anyopaque) callconv(.c) f64 {
+    _ = context;
+    return packetRealAtPoint(x);
+}
+
+/// C callback that exposes the imaginary wave-packet profile to MFEM.
+fn packetImagCallback(x: ?*const cm.CMFEM_Vector, context: ?*anyopaque) callconv(.c) f64 {
+    _ = context;
+    return packetImagAtPoint(x);
+}
+
+/// C callback that exposes the potential to MFEM.
+fn potentialCallback(x: ?*const cm.CMFEM_Vector, context: ?*anyopaque) callconv(.c) f64 {
+    _ = context;
+    return potentialAtPoint(x);
+}
+
+/// C callback that exposes the refinement indicator to MFEM.
+fn indicatorCallback(x: ?*const cm.CMFEM_Vector, context: ?*anyopaque) callconv(.c) f64 {
+    _ = context;
+    return indicatorAtPoint(x);
+}
+
+/// Builds a constrained mass matrix with a constant coefficient.
+fn buildConstantMassMatrix(
+    fes: *cm.CMFEM_FiniteElementSpace,
+    ess_tdof_list: *cm.CMFEM_ArrayInt,
+    coefficient: *cm.CMFEM_ConstantCoefficient,
+) !*cm.CMFEM_SparseMatrix {
+    const form = cm.CMFEM_BilinearForm_New(fes) orelse return error.SetupFailed;
+    defer cm.CMFEM_BilinearForm_Delete(form);
+
+    // Assemble the bilinear form, then extract the constrained true-dof matrix.
+    cm.CMFEM_BilinearForm_SetDiagonalPolicyOne(form);
+    cm.CMFEM_BilinearForm_AddDomainIntegratorMiCc(form, coefficient);
+    cm.CMFEM_BilinearForm_Assemble(form);
+    cm.CMFEM_BilinearForm_Finalize(form);
+    const temp = cm.CMFEM_SparseMatrix_New() orelse return error.SetupFailed;
+    defer cm.CMFEM_SparseMatrix_Delete(temp);
+    cm.CMFEM_BilinearForm_FormSystemMatrixSm(form, ess_tdof_list, temp);
+    return cm.CMFEM_SparseMatrix_NewCopy(temp) orelse return error.SetupFailed;
+}
+
+/// Builds a constrained mass-like matrix with a spatially varying coefficient.
+fn buildFunctionMassMatrix(
+    fes: *cm.CMFEM_FiniteElementSpace,
+    ess_tdof_list: *cm.CMFEM_ArrayInt,
+    coefficient: *cm.CMFEM_FunctionCoefficient,
+) !*cm.CMFEM_SparseMatrix {
+    const form = cm.CMFEM_BilinearForm_New(fes) orelse return error.SetupFailed;
+    defer cm.CMFEM_BilinearForm_Delete(form);
+
+    // Assemble the bilinear form, then extract the constrained true-dof matrix.
+    cm.CMFEM_BilinearForm_SetDiagonalPolicyOne(form);
+    cm.CMFEM_BilinearForm_AddDomainIntegratorMiFc(form, coefficient);
+    cm.CMFEM_BilinearForm_Assemble(form);
+    cm.CMFEM_BilinearForm_Finalize(form);
+    const temp = cm.CMFEM_SparseMatrix_New() orelse return error.SetupFailed;
+    defer cm.CMFEM_SparseMatrix_Delete(temp);
+    cm.CMFEM_BilinearForm_FormSystemMatrixSm(form, ess_tdof_list, temp);
+    return cm.CMFEM_SparseMatrix_NewCopy(temp) orelse return error.SetupFailed;
+}
+
+/// Builds a constrained diffusion matrix for the kinetic-energy operator.
+fn buildDiffusionMatrix(
+    fes: *cm.CMFEM_FiniteElementSpace,
+    ess_tdof_list: *cm.CMFEM_ArrayInt,
+    coefficient: *cm.CMFEM_ConstantCoefficient,
+) !*cm.CMFEM_SparseMatrix {
+    const form = cm.CMFEM_BilinearForm_New(fes) orelse return error.SetupFailed;
+    defer cm.CMFEM_BilinearForm_Delete(form);
+
+    // Assemble the bilinear form, then extract the constrained true-dof matrix.
+    cm.CMFEM_BilinearForm_SetDiagonalPolicyOne(form);
+    cm.CMFEM_BilinearForm_AddDomainIntegratorDiCc(form, coefficient);
+    cm.CMFEM_BilinearForm_Assemble(form);
+    cm.CMFEM_BilinearForm_Finalize(form);
+    const temp = cm.CMFEM_SparseMatrix_New() orelse return error.SetupFailed;
+    defer cm.CMFEM_SparseMatrix_Delete(temp);
+    cm.CMFEM_BilinearForm_FormSystemMatrixSm(form, ess_tdof_list, temp);
+    return cm.CMFEM_SparseMatrix_NewCopy(temp) orelse return error.SetupFailed;
+}
+
+const SetupTimer = struct {
     io: std.Io,
-    mesh_builder: VtuWriter.UnstructuredMeshBuilder,
-    real_data: []f64,
-    imag_data: []f64,
-    prob_data: []f64,
-    potential_data: []f64,
-    series_file: ?std.Io.File = null,
-    num_plotted: usize = 0,
+    last: std.Io.Timestamp,
 
-    fn init(allocator: std.mem.Allocator, io: std.Io) !Plotter {
-        var self = Plotter{
-            .allocator = allocator,
+    /// Starts a setup timer using the provided I/O clock.
+    fn init(io: std.Io) SetupTimer {
+        return .{
             .io = io,
-            .mesh_builder = VtuWriter.UnstructuredMeshBuilder.init(allocator),
-            .real_data = try allocator.alloc(f64, neq),
-            .imag_data = try allocator.alloc(f64, neq),
-            .prob_data = try allocator.alloc(f64, neq),
-            .potential_data = try allocator.alloc(f64, neq),
+            .last = std.Io.Timestamp.now(io, .awake),
         };
-
-        try self.mesh_builder.reservePoints(neq);
-        try self.mesh_builder.reserveCells(.VTK_VOXEL, (Nx - 1) * (Ny - 1) * (Nz - 1));
-
-        for (0..Nz) |iz| {
-            const zcoord = (@as(f64, @floatFromInt(iz)) + 0.5) * dz;
-            for (0..Ny) |iy| {
-                const ycoord = (@as(f64, @floatFromInt(iy)) + 0.5) * dy;
-                for (0..Nx) |ix| {
-                    const xcoord = (@as(f64, @floatFromInt(ix)) + 0.5) * dx;
-                    _ = try self.mesh_builder.addPoint(.{ xcoord, ycoord, zcoord });
-                    self.potential_data[idx(ix, iy, iz)] = potentialAt(xcoord, ycoord, zcoord);
-                }
-            }
-        }
-
-        for (0..Nz - 1) |iz| {
-            for (0..Ny - 1) |iy| {
-                for (0..Nx - 1) |ix| {
-                    try self.mesh_builder.addCell(.VTK_VOXEL, .{
-                        @intCast(idx(ix, iy, iz)),
-                        @intCast(idx(ix + 1, iy, iz)),
-                        @intCast(idx(ix, iy + 1, iz)),
-                        @intCast(idx(ix + 1, iy + 1, iz)),
-                        @intCast(idx(ix, iy, iz + 1)),
-                        @intCast(idx(ix + 1, iy, iz + 1)),
-                        @intCast(idx(ix, iy + 1, iz + 1)),
-                        @intCast(idx(ix + 1, iy + 1, iz + 1)),
-                    });
-                }
-            }
-        }
-
-        return self;
     }
 
-    fn writeSeriesChunk(self: *Plotter, bytes: []const u8) !void {
-        const file = self.series_file orelse return error.SeriesFileNotOpen;
-        var buf: [256]u8 = undefined;
-        var writer = file.writerStreaming(self.io, &buf);
-        try writer.interface.writeAll(bytes);
-        try writer.interface.flush();
-    }
-
-    fn startSeries(self: *Plotter) !void {
-        self.series_file = try std.Io.Dir.cwd().createFile(self.io, "schrodinger3d.vtu.series", .{});
-        try self.writeSeriesChunk("{\n  \"file-series-version\" : \"1.0\",\n  \"files\" : [\n");
-    }
-
-    fn plot(self: *Plotter, y: *const a.CVec, t: f64, filename: []const u8) !void {
-        for (0..neq) |i| {
-            const psi = y.data[i];
-            self.real_data[i] = psi.re;
-            self.imag_data[i] = psi.im;
-            self.prob_data[i] = psi.re * psi.re + psi.im * psi.im;
-        }
-
-        const mesh = self.mesh_builder.getUnstructuredMesh();
-        const data_sets = [_]VtuWriter.DataSet{
-            .{ "psi_real", VtuWriter.DataSetType.PointData, 1, self.real_data },
-            .{ "psi_imag", VtuWriter.DataSetType.PointData, 1, self.imag_data },
-            .{ "probability_density", VtuWriter.DataSetType.PointData, 1, self.prob_data },
-            .{ "potential", VtuWriter.DataSetType.PointData, 1, self.potential_data },
-        };
-
-        try VtuWriter.writeVtu(self.allocator, self.io, filename, mesh, &data_sets, .rawbinarycompressed);
-        if (self.series_file != null) {
-            if (self.num_plotted > 0) {
-                try self.writeSeriesChunk(",\n");
-            }
-            var line_buf: [256]u8 = undefined;
-            const line = try std.fmt.bufPrint(
-                &line_buf,
-                "    {{ \"name\" : \"{s}\", \"time\" : {d:.9} }}",
-                .{ filename, t },
-            );
-            try self.writeSeriesChunk(line);
-        }
-        self.num_plotted += 1;
-    }
-
-    fn deinit(self: *Plotter) void {
-        self.mesh_builder.deinit();
-        self.allocator.free(self.real_data);
-        self.allocator.free(self.imag_data);
-        self.allocator.free(self.prob_data);
-        self.allocator.free(self.potential_data);
-
-        if (self.series_file) |file| {
-            self.writeSeriesChunk("\n  ]\n}\n") catch {};
-            file.close(self.io);
-        }
+    /// Prints the elapsed setup time since the previous timer checkpoint.
+    fn print(self: *SetupTimer, comptime label: []const u8) void {
+        const now = std.Io.Timestamp.now(self.io, .awake);
+        const elapsed = self.last.durationTo(now);
+        self.last = now;
+        const seconds = @as(f64, @floatFromInt(elapsed.toNanoseconds())) /
+            @as(f64, @floatFromInt(std.time.ns_per_s));
+        std.debug.print("    setup {s}: {d:.3}s\n", .{ label, seconds });
     }
 };
 
-fn normalizeWavefunction(y: *a.CVec) void {
-    var sum_prob: f64 = 0.0;
-    for (0..neq) |i| {
-        const psi = y.data[i];
-        sum_prob += psi.re * psi.re + psi.im * psi.im;
-    }
+const Simulation = struct {
+    mesh: *cm.CMFEM_Mesh,
+    fec: *cm.CMFEM_H1FeCollection,
+    fes: *cm.CMFEM_FiniteElementSpace,
+    ess_bdr: *cm.CMFEM_ArrayInt,
+    ess_tdof_list: *cm.CMFEM_ArrayInt,
+    stiffness_mat: *cm.CMFEM_SparseMatrix,
+    potential_mat: *cm.CMFEM_SparseMatrix,
+    mass_diag: *cm.CMFEM_Vector,
+    x_coord: *cm.CMFEM_Vector,
+    y_coord: *cm.CMFEM_Vector,
+    z_coord: *cm.CMFEM_Vector,
+    state_real: *cm.CMFEM_Vector,
+    state_imag: *cm.CMFEM_Vector,
+    rhs_vec: *cm.CMFEM_Vector,
+    solve_vec: *cm.CMFEM_Vector,
+    real_gf: *cm.CMFEM_GridFunction,
+    imag_gf: *cm.CMFEM_GridFunction,
+    prob_gf: *cm.CMFEM_GridFunction,
+    potential_gf: *cm.CMFEM_GridFunction,
+    paraview: *cm.CMFEM_ParaViewDataCollection,
+    ndofs: usize,
 
-    const norm = sum_prob * cell_volume;
-    if (norm == 0.0) return;
+    /// Creates all mesh, FEM, operator, state, and output resources.
+    fn init(io: std.Io) !Simulation {
+        std.debug.print("\n3D Schrödinger FEM setup:\n", .{});
+        var setup_timer = SetupTimer.init(io);
 
-    const scale = 1.0 / @sqrt(norm);
-    const scale_c = a.Complex.init(scale, 0.0);
-    for (0..neq) |i| {
-        y.data[i] = y.data[i].mul(scale_c);
-    }
-}
+        // Build the base structured mesh before localized coefficient refinement.
+        var mesh = cm.CMFEM_Mesh_New() orelse return error.SetupFailed;
+        errdefer cm.CMFEM_Mesh_Delete(mesh);
+        cm.CMFEM_Mesh_Load(mesh, inline_mesh, 1, 0, 0);
 
-fn initializeWavefunction(y: *a.CVec) void {
-    const sigma2 = packet_radius * packet_radius;
-    for (0..Nz) |iz| {
-        const zcoord = (@as(f64, @floatFromInt(iz)) + 0.5) * dz;
-        for (0..Ny) |iy| {
-            const ycoord = (@as(f64, @floatFromInt(iy)) + 0.5) * dy;
-            for (0..Nx) |ix| {
-                const xcoord = (@as(f64, @floatFromInt(ix)) + 0.5) * dx;
-                const rx = xcoord - packet_x0;
-                const ry = ycoord - packet_y0;
-                const rz = zcoord - packet_z0;
-                const r2 = rx * rx + ry * ry + rz * rz;
-                const envelope = @exp(-r2 / (2.0 * sigma2));
-                const phase = packet_kx * xcoord + packet_ky * ycoord + packet_kz * zcoord;
-                y.data[idx(ix, iy, iz)] = a.Complex.init(
-                    envelope * @cos(phase),
-                    envelope * @sin(phase),
-                );
-            }
+        for (0..base_uniform_refs) |_| {
+            cm.CMFEM_Mesh_UniformRefinement(mesh);
         }
-    }
+        setup_timer.print("base mesh");
 
-    normalizeWavefunction(y);
-}
-
-fn computeDiagnostics(y: *a.CVec) Diagnostics {
-    var sum_prob: f64 = 0.0;
-    var sum_xprob: f64 = 0.0;
-    var sum_yprob: f64 = 0.0;
-    var sum_zprob: f64 = 0.0;
-    var sum_x2prob: f64 = 0.0;
-    var sum_y2prob: f64 = 0.0;
-    var sum_z2prob: f64 = 0.0;
-    var peak_amp: f64 = 0.0;
-
-    for (0..Nz) |iz| {
-        const zcoord = (@as(f64, @floatFromInt(iz)) + 0.5) * dz;
-        for (0..Ny) |iy| {
-            const ycoord = (@as(f64, @floatFromInt(iy)) + 0.5) * dy;
-            for (0..Nx) |ix| {
-                const xcoord = (@as(f64, @floatFromInt(ix)) + 0.5) * dx;
-                const psi = y.data[idx(ix, iy, iz)];
-                const prob = psi.re * psi.re + psi.im * psi.im;
-                const amp = @sqrt(prob);
-
-                sum_prob += prob;
-                sum_xprob += xcoord * prob;
-                sum_yprob += ycoord * prob;
-                sum_zprob += zcoord * prob;
-                sum_x2prob += xcoord * xcoord * prob;
-                sum_y2prob += ycoord * ycoord * prob;
-                sum_z2prob += zcoord * zcoord * prob;
-                if (amp > peak_amp) peak_amp = amp;
-            }
+        if (coeff_refiner_max_elements > 0) {
+            // Refine around the clamped singular potential so the center is resolved.
+            const indicator = cm.CMFEM_FunctionCoefficient_New(indicatorCallback, null) orelse return error.SetupFailed;
+            defer cm.CMFEM_FunctionCoefficient_Delete(indicator);
+            const coeff_refiner = cm.CMFEM_CoefficientRefiner_NewFc(indicator, fem_order) orelse return error.SetupFailed;
+            defer cm.CMFEM_CoefficientRefiner_Delete(coeff_refiner);
+            cm.CMFEM_CoefficientRefiner_SetIntRuleOrder(coeff_refiner, 2 * fem_order + 4);
+            cm.CMFEM_CoefficientRefiner_SetMaxElements(coeff_refiner, coeff_refiner_max_elements);
+            cm.CMFEM_CoefficientRefiner_SetThreshold(coeff_refiner, coeff_refiner_threshold);
+            cm.CMFEM_CoefficientRefiner_SetNCLimit(coeff_refiner, coeff_refiner_nc_limit);
+            _ = cm.CMFEM_CoefficientRefiner_PreprocessMesh(coeff_refiner, mesh);
+            setup_timer.print("center refinement");
         }
-    }
 
-    if (sum_prob == 0.0) {
+        // Convert opposite cube faces to periodic identifications.
+        const periodic_mesh = cm.CMFEM_Mesh_NewPeriodic(mesh, 1.0, 1.0, 1.0) orelse return error.SetupFailed;
+        cm.CMFEM_Mesh_Delete(mesh);
+        mesh = periodic_mesh;
+        setup_timer.print("periodic identification");
+
+        // Create the finite element space and the empty essential-dof lists.
+        const dim = cm.CMFEM_Mesh_Dimension(mesh);
+        const fec = cm.CMFEM_H1FeCollection_NewOrderDim(fem_order, dim) orelse return error.SetupFailed;
+        errdefer cm.CMFEM_H1FeCollection_Delete(fec);
+        const fes = cm.CMFEM_FiniteElementSpace_NewMeshH1(mesh, fec) orelse return error.SetupFailed;
+        errdefer cm.CMFEM_FiniteElementSpace_Delete(fes);
+        setup_timer.print("finite element space");
+
+        const ess_bdr = cm.CMFEM_ArrayInt_New() orelse return error.SetupFailed;
+        errdefer cm.CMFEM_ArrayInt_Delete(ess_bdr);
+        const ess_tdof_list = cm.CMFEM_ArrayInt_New() orelse return error.SetupFailed;
+        errdefer cm.CMFEM_ArrayInt_Delete(ess_tdof_list);
+
+        // Prepare coefficient objects shared by operator assembly and projections.
+        const one = cm.CMFEM_ConstantCoefficient_New(1.0) orelse return error.SetupFailed;
+        defer cm.CMFEM_ConstantCoefficient_Delete(one);
+        const potential_coef = cm.CMFEM_FunctionCoefficient_New(potentialCallback, null) orelse return error.SetupFailed;
+        defer cm.CMFEM_FunctionCoefficient_Delete(potential_coef);
+        const x_coef = cm.CMFEM_FunctionCoefficient_New(xCoordCallback, null) orelse return error.SetupFailed;
+        defer cm.CMFEM_FunctionCoefficient_Delete(x_coef);
+        const y_coef = cm.CMFEM_FunctionCoefficient_New(yCoordCallback, null) orelse return error.SetupFailed;
+        defer cm.CMFEM_FunctionCoefficient_Delete(y_coef);
+        const z_coef = cm.CMFEM_FunctionCoefficient_New(zCoordCallback, null) orelse return error.SetupFailed;
+        defer cm.CMFEM_FunctionCoefficient_Delete(z_coef);
+
+        // Assemble the time-independent operators used by the Hamiltonian.
+        const mass_mat = try buildConstantMassMatrix(fes, ess_tdof_list, one);
+        defer cm.CMFEM_SparseMatrix_Delete(mass_mat);
+        setup_timer.print("mass matrix");
+        const stiffness_mat = try buildDiffusionMatrix(fes, ess_tdof_list, one);
+        errdefer cm.CMFEM_SparseMatrix_Delete(stiffness_mat);
+        setup_timer.print("stiffness matrix");
+        const potential_mat = try buildFunctionMassMatrix(fes, ess_tdof_list, potential_coef);
+        errdefer cm.CMFEM_SparseMatrix_Delete(potential_mat);
+        setup_timer.print("potential matrix");
+
+        const ndofs = @as(usize, @intCast(cm.CMFEM_FiniteElementSpace_GetTrueVSize(fes)));
+
+        // A consistent mass solve inside every RHS evaluation is too expensive
+        // here. Use the positive diagonal mass approximation for both evolution
+        // and diagnostics so the dynamics and reported norm stay aligned.
+        const mass_diag = cm.CMFEM_Vector_NewSize(@intCast(ndofs)) orelse return error.SetupFailed;
+        errdefer cm.CMFEM_Vector_Delete(mass_diag);
+        cm.CMFEM_SparseMatrix_GetDiag(mass_mat, mass_diag);
+
+        // Allocate cached coordinates, state vectors, and reusable RHS work space.
+        const x_coord = cm.CMFEM_Vector_NewSize(@intCast(ndofs)) orelse return error.SetupFailed;
+        errdefer cm.CMFEM_Vector_Delete(x_coord);
+        const y_coord = cm.CMFEM_Vector_NewSize(@intCast(ndofs)) orelse return error.SetupFailed;
+        errdefer cm.CMFEM_Vector_Delete(y_coord);
+        const z_coord = cm.CMFEM_Vector_NewSize(@intCast(ndofs)) orelse return error.SetupFailed;
+        errdefer cm.CMFEM_Vector_Delete(z_coord);
+
+        const state_real = cm.CMFEM_Vector_NewSize(@intCast(ndofs)) orelse return error.SetupFailed;
+        errdefer cm.CMFEM_Vector_Delete(state_real);
+        const state_imag = cm.CMFEM_Vector_NewSize(@intCast(ndofs)) orelse return error.SetupFailed;
+        errdefer cm.CMFEM_Vector_Delete(state_imag);
+        const rhs_vec = cm.CMFEM_Vector_NewSize(@intCast(ndofs)) orelse return error.SetupFailed;
+        errdefer cm.CMFEM_Vector_Delete(rhs_vec);
+        const solve_vec = cm.CMFEM_Vector_NewSize(@intCast(ndofs)) orelse return error.SetupFailed;
+        errdefer cm.CMFEM_Vector_Delete(solve_vec);
+
+        // Allocate grid functions for projections, diagnostics, and output fields.
+        const real_gf = cm.CMFEM_GridFunction_New(fes) orelse return error.SetupFailed;
+        errdefer cm.CMFEM_GridFunction_Delete(real_gf);
+        const imag_gf = cm.CMFEM_GridFunction_New(fes) orelse return error.SetupFailed;
+        errdefer cm.CMFEM_GridFunction_Delete(imag_gf);
+        const prob_gf = cm.CMFEM_GridFunction_New(fes) orelse return error.SetupFailed;
+        errdefer cm.CMFEM_GridFunction_Delete(prob_gf);
+        const potential_gf = cm.CMFEM_GridFunction_New(fes) orelse return error.SetupFailed;
+        errdefer cm.CMFEM_GridFunction_Delete(potential_gf);
+        cm.CMFEM_GridFunction_ProjectCoefficientFc(potential_gf, potential_coef);
+
+        // Project physical coordinates once so diagnostics can use true-dof values.
+        const coord_gf = cm.CMFEM_GridFunction_New(fes) orelse return error.SetupFailed;
+        defer cm.CMFEM_GridFunction_Delete(coord_gf);
+        cm.CMFEM_GridFunction_ProjectCoefficientFc(coord_gf, x_coef);
+        cm.CMFEM_GridFunction_GetTrueDofs(coord_gf, x_coord);
+        cm.CMFEM_GridFunction_ProjectCoefficientFc(coord_gf, y_coef);
+        cm.CMFEM_GridFunction_GetTrueDofs(coord_gf, y_coord);
+        cm.CMFEM_GridFunction_ProjectCoefficientFc(coord_gf, z_coef);
+        cm.CMFEM_GridFunction_GetTrueDofs(coord_gf, z_coord);
+        setup_timer.print("state storage");
+
+        // Register all visualization fields with the ParaView data collection.
+        const paraview = cm.CMFEM_ParaViewDataCollection_New("schrodinger3d", mesh) orelse return error.SetupFailed;
+        errdefer cm.CMFEM_ParaViewDataCollection_Delete(paraview);
+        cm.CMFEM_ParaViewDataCollection_SetLevelsOfDetail(paraview, 2);
+        cm.CMFEM_ParaViewDataCollection_SetDataFormatBinary(paraview);
+        cm.CMFEM_ParaViewDataCollection_SetHighOrderOutput(paraview, 1);
+        cm.CMFEM_ParaViewDataCollection_RegisterFieldGf(paraview, "psi_real", real_gf);
+        cm.CMFEM_ParaViewDataCollection_RegisterFieldGf(paraview, "psi_imag", imag_gf);
+        cm.CMFEM_ParaViewDataCollection_RegisterFieldGf(paraview, "probability_density", prob_gf);
+        cm.CMFEM_ParaViewDataCollection_RegisterFieldGf(paraview, "potential", potential_gf);
+
         return .{
-            .norm = 0.0,
-            .x_mean = 0.0,
-            .y_mean = 0.0,
-            .z_mean = 0.0,
-            .sigma_x = 0.0,
-            .sigma_y = 0.0,
-            .sigma_z = 0.0,
+            .mesh = mesh,
+            .fec = fec,
+            .fes = fes,
+            .ess_bdr = ess_bdr,
+            .ess_tdof_list = ess_tdof_list,
+            .stiffness_mat = stiffness_mat,
+            .potential_mat = potential_mat,
+            .mass_diag = mass_diag,
+            .x_coord = x_coord,
+            .y_coord = y_coord,
+            .z_coord = z_coord,
+            .state_real = state_real,
+            .state_imag = state_imag,
+            .rhs_vec = rhs_vec,
+            .solve_vec = solve_vec,
+            .real_gf = real_gf,
+            .imag_gf = imag_gf,
+            .prob_gf = prob_gf,
+            .potential_gf = potential_gf,
+            .paraview = paraview,
+            .ndofs = ndofs,
+        };
+    }
+
+    /// Releases the MFEM and output resources owned by the simulation.
+    fn deinit(self: *Simulation) void {
+        cm.CMFEM_ParaViewDataCollection_Delete(self.paraview);
+        cm.CMFEM_GridFunction_Delete(self.potential_gf);
+        cm.CMFEM_GridFunction_Delete(self.prob_gf);
+        cm.CMFEM_GridFunction_Delete(self.imag_gf);
+        cm.CMFEM_GridFunction_Delete(self.real_gf);
+        cm.CMFEM_Vector_Delete(self.solve_vec);
+        cm.CMFEM_Vector_Delete(self.rhs_vec);
+        cm.CMFEM_Vector_Delete(self.state_imag);
+        cm.CMFEM_Vector_Delete(self.state_real);
+        cm.CMFEM_Vector_Delete(self.z_coord);
+        cm.CMFEM_Vector_Delete(self.y_coord);
+        cm.CMFEM_Vector_Delete(self.x_coord);
+        cm.CMFEM_Vector_Delete(self.mass_diag);
+        cm.CMFEM_SparseMatrix_Delete(self.potential_mat);
+        cm.CMFEM_SparseMatrix_Delete(self.stiffness_mat);
+        cm.CMFEM_ArrayInt_Delete(self.ess_tdof_list);
+        cm.CMFEM_ArrayInt_Delete(self.ess_bdr);
+        cm.CMFEM_FiniteElementSpace_Delete(self.fes);
+        cm.CMFEM_H1FeCollection_Delete(self.fec);
+        cm.CMFEM_Mesh_Delete(self.mesh);
+    }
+
+    /// Enforces homogeneous values on the essential true dofs of a vector.
+    fn zeroEssentialDofs(self: *Simulation, vector: *cm.CMFEM_Vector) void {
+        cm.CMFEM_Vector_SetSubVectorAi(vector, self.ess_tdof_list, 0.0);
+    }
+
+    /// Projects, normalizes, and copies the initial wave packet into ARKODE state.
+    fn initializeState(self: *Simulation, sunvec_y: a.N_Vector) !void {
+        const real_coef = cm.CMFEM_FunctionCoefficient_New(packetRealCallback, null) orelse return error.SetupFailed;
+        defer cm.CMFEM_FunctionCoefficient_Delete(real_coef);
+        const imag_coef = cm.CMFEM_FunctionCoefficient_New(packetImagCallback, null) orelse return error.SetupFailed;
+        defer cm.CMFEM_FunctionCoefficient_Delete(imag_coef);
+
+        // Project the analytic packet and pull the true dofs into evolution vectors.
+        cm.CMFEM_GridFunction_ProjectCoefficientFc(self.real_gf, real_coef);
+        cm.CMFEM_GridFunction_ProjectCoefficientFc(self.imag_gf, imag_coef);
+        cm.CMFEM_GridFunction_GetTrueDofs(self.real_gf, self.state_real);
+        cm.CMFEM_GridFunction_GetTrueDofs(self.imag_gf, self.state_imag);
+        self.zeroEssentialDofs(self.state_real);
+        self.zeroEssentialDofs(self.state_imag);
+
+        // Normalize with the same diagonal mass approximation used during evolution.
+        const norm2 = self.diagonalNorm();
+        if (norm2 > 0.0) {
+            const scale = 1.0 / @sqrt(norm2);
+            cm.CMFEM_Vector_Scale(self.state_real, scale);
+            cm.CMFEM_Vector_Scale(self.state_imag, scale);
+        }
+
+        _ = self.updateGridFunctionsFromStateVectors();
+
+        // Pack the real and imaginary true-dof vectors into SUNDIALS complex storage.
+        const y = a.N_VGetCVec(sunvec_y);
+        for (0..self.ndofs) |i| {
+            y.data[i] = a.Complex.init(
+                cm.CMFEM_Vector_Get(self.state_real, @intCast(i)),
+                cm.CMFEM_Vector_Get(self.state_imag, @intCast(i)),
+            );
+        }
+    }
+
+    /// Copies ARKODE complex state values into the MFEM real and imaginary vectors.
+    fn syncStateVectors(self: *Simulation, y: *const a.CVec) void {
+        for (0..self.ndofs) |i| {
+            cm.CMFEM_Vector_Set(self.state_real, @intCast(i), y.data[i].re);
+            cm.CMFEM_Vector_Set(self.state_imag, @intCast(i), y.data[i].im);
+        }
+    }
+
+    /// Updates output grid functions from state vectors and returns peak amplitude.
+    fn updateGridFunctionsFromStateVectors(self: *Simulation) f64 {
+        cm.CMFEM_GridFunction_SetFromTrueDofs(self.real_gf, self.state_real);
+        cm.CMFEM_GridFunction_SetFromTrueDofs(self.imag_gf, self.state_imag);
+
+        // Derive probability density from the reconstructed real and imaginary fields.
+        const local_size = @as(usize, @intCast(cm.CMFEM_GridFunction_Size(self.real_gf)));
+        var peak_amp: f64 = 0.0;
+        for (0..local_size) |i| {
+            const dof = @as(c_int, @intCast(i));
+            const real_value = cm.CMFEM_GridFunction_Get(self.real_gf, dof);
+            const imag_value = cm.CMFEM_GridFunction_Get(self.imag_gf, dof);
+            const prob = real_value * real_value + imag_value * imag_value;
+            cm.CMFEM_GridFunction_Set(self.prob_gf, dof, prob);
+            peak_amp = @max(peak_amp, @sqrt(prob));
+        }
+        return peak_amp;
+    }
+
+    /// Computes the diagonal-mass approximation of the wavefunction norm squared.
+    fn diagonalNorm(self: *Simulation) f64 {
+        var total: f64 = 0.0;
+
+        for (0..self.ndofs) |i| {
+            const dof = @as(c_int, @intCast(i));
+            const real_value = cm.CMFEM_Vector_Get(self.state_real, dof);
+            const imag_value = cm.CMFEM_Vector_Get(self.state_imag, dof);
+            total += cm.CMFEM_Vector_Get(self.mass_diag, dof) *
+                (real_value * real_value + imag_value * imag_value);
+        }
+
+        return total;
+    }
+
+    /// Computes norm, position moments, widths, and peak amplitude diagnostics.
+    fn computeDiagnostics(self: *Simulation, y: *const a.CVec) Diagnostics {
+        // Synchronize solver state before updating fields and moment sums.
+        self.syncStateVectors(y);
+        const peak_amp = self.updateGridFunctionsFromStateVectors();
+
+        var norm: f64 = 0.0;
+        var sum_x_sin: f64 = 0.0;
+        var sum_x_cos: f64 = 0.0;
+        var sum_y_sin: f64 = 0.0;
+        var sum_y_cos: f64 = 0.0;
+        var sum_z_sin: f64 = 0.0;
+        var sum_z_cos: f64 = 0.0;
+
+        // Accumulate diagonal-mass weighted circular coordinate moments.
+        for (0..self.ndofs) |i| {
+            const dof = @as(c_int, @intCast(i));
+            const real_value = cm.CMFEM_Vector_Get(self.state_real, dof);
+            const imag_value = cm.CMFEM_Vector_Get(self.state_imag, dof);
+            const weighted_prob = cm.CMFEM_Vector_Get(self.mass_diag, dof) *
+                (real_value * real_value + imag_value * imag_value);
+            const x = cm.CMFEM_Vector_Get(self.x_coord, dof);
+            const y_coord = cm.CMFEM_Vector_Get(self.y_coord, dof);
+            const z = cm.CMFEM_Vector_Get(self.z_coord, dof);
+
+            norm += weighted_prob;
+            const x_angle = two_pi * x / domain_x;
+            const y_angle = two_pi * y_coord / domain_y;
+            const z_angle = two_pi * z / domain_z;
+            sum_x_sin += @sin(x_angle) * weighted_prob;
+            sum_x_cos += @cos(x_angle) * weighted_prob;
+            sum_y_sin += @sin(y_angle) * weighted_prob;
+            sum_y_cos += @cos(y_angle) * weighted_prob;
+            sum_z_sin += @sin(z_angle) * weighted_prob;
+            sum_z_cos += @cos(z_angle) * weighted_prob;
+        }
+
+        if (norm <= 0.0) {
+            return .{
+                .norm = 0.0,
+                .x_mean = 0.0,
+                .y_mean = 0.0,
+                .z_mean = 0.0,
+                .sigma_x = 0.0,
+                .sigma_y = 0.0,
+                .sigma_z = 0.0,
+                .peak_amp = peak_amp,
+            };
+        }
+
+        const x_mean = circularMeanCoord(sum_x_sin, sum_x_cos, domain_x);
+        const y_mean = circularMeanCoord(sum_y_sin, sum_y_cos, domain_y);
+        const z_mean = circularMeanCoord(sum_z_sin, sum_z_cos, domain_z);
+
+        var sum_dx2: f64 = 0.0;
+        var sum_dy2: f64 = 0.0;
+        var sum_dz2: f64 = 0.0;
+        for (0..self.ndofs) |i| {
+            const dof = @as(c_int, @intCast(i));
+            const real_value = cm.CMFEM_Vector_Get(self.state_real, dof);
+            const imag_value = cm.CMFEM_Vector_Get(self.state_imag, dof);
+            const weighted_prob = cm.CMFEM_Vector_Get(self.mass_diag, dof) *
+                (real_value * real_value + imag_value * imag_value);
+            const x = cm.CMFEM_Vector_Get(self.x_coord, dof);
+            const y_coord = cm.CMFEM_Vector_Get(self.y_coord, dof);
+            const z = cm.CMFEM_Vector_Get(self.z_coord, dof);
+
+            sum_dx2 += sqr(periodicOffset(x, x_mean, domain_x)) * weighted_prob;
+            sum_dy2 += sqr(periodicOffset(y_coord, y_mean, domain_y)) * weighted_prob;
+            sum_dz2 += sqr(periodicOffset(z, z_mean, domain_z)) * weighted_prob;
+        }
+
+        return .{
+            .norm = norm,
+            .x_mean = x_mean,
+            .y_mean = y_mean,
+            .z_mean = z_mean,
+            .sigma_x = @sqrt(sum_dx2 / norm),
+            .sigma_y = @sqrt(sum_dy2 / norm),
+            .sigma_z = @sqrt(sum_dz2 / norm),
             .peak_amp = peak_amp,
         };
     }
 
-    const x_mean = sum_xprob / sum_prob;
-    const y_mean = sum_yprob / sum_prob;
-    const z_mean = sum_zprob / sum_prob;
-    const var_x = @max(0.0, sum_x2prob / sum_prob - x_mean * x_mean);
-    const var_y = @max(0.0, sum_y2prob / sum_prob - y_mean * y_mean);
-    const var_z = @max(0.0, sum_z2prob / sum_prob - z_mean * z_mean);
+    /// Applies the discrete Hamiltonian H = -0.5 Laplacian + V to a state vector.
+    fn applyHamiltonian(self: *Simulation, state: *cm.CMFEM_Vector) void {
+        cm.CMFEM_SparseMatrix_Mult(self.stiffness_mat, state, self.rhs_vec);
+        cm.CMFEM_Vector_Scale(self.rhs_vec, 0.5);
+        cm.CMFEM_SparseMatrix_Mult(self.potential_mat, state, self.solve_vec);
+        cm.CMFEM_Vector_Add(self.rhs_vec, self.solve_vec);
+    }
 
-    return .{
-        .norm = sum_prob * cell_volume,
-        .x_mean = x_mean,
-        .y_mean = y_mean,
-        .z_mean = z_mean,
-        .sigma_x = @sqrt(var_x),
-        .sigma_y = @sqrt(var_y),
-        .sigma_z = @sqrt(var_z),
-        .peak_amp = peak_amp,
-    };
-}
+    /// Solves the diagonal mass approximation into the reusable solve vector.
+    fn solveMass(self: *Simulation) void {
+        for (0..self.ndofs) |i| {
+            const dof = @as(c_int, @intCast(i));
+            const mass = cm.CMFEM_Vector_Get(self.mass_diag, dof);
+            const rhs = cm.CMFEM_Vector_Get(self.rhs_vec, dof);
+            cm.CMFEM_Vector_Set(self.solve_vec, dof, rhs / mass);
+        }
+    }
 
-export fn Rhs(tn: a.sunrealtype, sunvec_y: a.N_Vector, sunvec_f: a.N_Vector, user_data: ?*anyopaque) c_int {
+    /// Saves the currently registered grid functions at one output step.
+    fn save(self: *Simulation, step: usize, time: f64) void {
+        cm.CMFEM_ParaViewDataCollection_SetCycle(self.paraview, @intCast(step));
+        cm.CMFEM_ParaViewDataCollection_SetTime(self.paraview, time);
+        cm.CMFEM_ParaViewDataCollection_Save(self.paraview);
+    }
+};
+
+/// ARKODE RHS callback for the split real/imaginary Schrödinger system.
+export fn Rhs(
+    tn: a.sunrealtype,
+    sunvec_y: a.N_Vector,
+    sunvec_f: a.N_Vector,
+    user_data: ?*anyopaque,
+) c_int {
     _ = tn;
-    _ = user_data;
+    const simulation: *Simulation = @ptrCast(@alignCast(user_data orelse return -1));
     const y = a.N_VGetCVec(sunvec_y);
     const f = a.N_VGetCVec(sunvec_f);
 
-    for (0..Nz) |iz| {
-        const zcoord = (@as(f64, @floatFromInt(iz)) + 0.5) * dz;
-        const iz_b = if (iz == 0) Nz - 1 else iz - 1;
-        const iz_f = if (iz + 1 == Nz) 0 else iz + 1;
-        for (0..Ny) |iy| {
-            const ycoord = (@as(f64, @floatFromInt(iy)) + 0.5) * dy;
-            const iy_d = if (iy == 0) Ny - 1 else iy - 1;
-            const iy_u = if (iy + 1 == Ny) 0 else iy + 1;
-            for (0..Nx) |ix| {
-                const xcoord = (@as(f64, @floatFromInt(ix)) + 0.5) * dx;
-                const ix_l = if (ix == 0) Nx - 1 else ix - 1;
-                const ix_r = if (ix + 1 == Nx) 0 else ix + 1;
+    // Bring the MFEM state vectors in sync with ARKODE's complex state.
+    simulation.syncStateVectors(y);
 
-                const center_id = idx(ix, iy, iz);
-                const center = y.data[center_id];
-
-                const lap_x = y.data[idx(ix_r, iy, iz)]
-                    .add(y.data[idx(ix_l, iy, iz)])
-                    .sub(center.mul(two))
-                    .mul(inv_dx2_c);
-                const lap_y = y.data[idx(ix, iy_u, iz)]
-                    .add(y.data[idx(ix, iy_d, iz)])
-                    .sub(center.mul(two))
-                    .mul(inv_dy2_c);
-                const lap_z = y.data[idx(ix, iy, iz_f)]
-                    .add(y.data[idx(ix, iy, iz_b)])
-                    .sub(center.mul(two))
-                    .mul(inv_dz2_c);
-
-                const v = potentialAt(xcoord, ycoord, zcoord);
-                const potential_term = center.mul(a.Complex.init(0.0, -v));
-                f.data[center_id] = lap_x.add(lap_y).add(lap_z).mul(i_half).add(potential_term);
-            }
-        }
+    // d(real(psi))/dt = M^-1 H imag(psi).
+    simulation.applyHamiltonian(simulation.state_imag);
+    simulation.solveMass();
+    for (0..simulation.ndofs) |i| {
+        f.data[i].re = cm.CMFEM_Vector_Get(simulation.solve_vec, @intCast(i));
     }
+
+    // d(imag(psi))/dt = -M^-1 H real(psi).
+    simulation.applyHamiltonian(simulation.state_real);
+    simulation.solveMass();
+    for (0..simulation.ndofs) |i| {
+        f.data[i].im = -cm.CMFEM_Vector_Get(simulation.solve_vec, @intCast(i));
+    }
+
     return 0;
 }
 
+/// Prints selected final ARKODE solver counters.
 fn ARKStepStats(arkode_mem: *anyopaque) void {
     var nsteps: c_long = 0;
     var nst_a: c_long = 0;
@@ -358,22 +709,32 @@ fn ARKStepStats(arkode_mem: *anyopaque) void {
     std.debug.print("\nFinal Solver Statistics:\n", .{});
     std.debug.print("    Internal solver steps = {}, (attempted = {})\n", .{ nsteps, nst_a });
     std.debug.print("    Total implicit RHS evals = {}\n", .{nfi});
-    std.debug.print("    Total number of error test failures ={}\n", .{netfails});
+    std.debug.print("    Total number of error test failures = {}\n", .{netfails});
 }
 
+/// Runs the full 3D finite-element Schrödinger simulation.
 pub fn main(init: std.process.Init) !void {
-    const allocator = init.gpa;
-    const io = init.io;
+    _ = init.gpa;
+
+    // Build FEM data structures and seed ARKODE's state vector.
+    var simulation = try Simulation.init(init.io);
+    defer simulation.deinit();
 
     var sunctx: a.SUNContext = null;
     if (a.SUNContext_Create(a.SUN_COMM_NULL, &sunctx) != 0) {
         std.debug.print("ERROR: SUNContext_Create failed\n", .{});
-        return;
+        return error.SetupFailed;
     }
     defer _ = a.SUNContext_Free(&sunctx);
 
-    std.debug.print("\n3D Schrödinger simulation on a unit cube:\n", .{});
-    std.debug.print("    grid = {} x {} x {}, timesteps = {}\n", .{ Nx, Ny, Nz, Nt });
+    const sunvec_y = try a.N_VNew_Complex(@intCast(simulation.ndofs), sunctx);
+    defer a.N_VDestroy_Complex(sunvec_y);
+    try simulation.initializeState(sunvec_y);
+
+    // Report the run configuration before configuring the time integrator.
+    std.debug.print("\n3D Schrödinger FEM simulation on a unit cube:\n", .{});
+    std.debug.print("    FE space = H1 order {}, true dofs = {}, timesteps = {}\n", .{ fem_order, simulation.ndofs, Nt });
+    std.debug.print("    mesh elements after center refinement = {}\n", .{cm.CMFEM_Mesh_GetNE(simulation.mesh)});
     std.debug.print("    packet radius = {d:.3}, center = ({d:.3}, {d:.3}, {d:.3})\n", .{
         packet_radius,
         packet_x0,
@@ -385,6 +746,7 @@ pub fn main(init: std.process.Init) !void {
         packet_ky,
         packet_kz,
     });
+    std.debug.print("    initial packet phase = exp(i k.x), continuum free-packet x velocity ~= {d:.3}\n", .{packet_group_velocity_x});
     std.debug.print("    potential: V(x,y,z) = -k/r^2, center = ({d:.3}, {d:.3}, {d:.3})\n", .{
         potential_center_x,
         potential_center_y,
@@ -399,59 +761,56 @@ pub fn main(init: std.process.Init) !void {
     std.debug.print("    ARKODE method = implicit midpoint (DIRK), reltol = {e}, abstol = {e}\n", .{ reltol, abstol });
     std.debug.print("    internal fixed substeps per output step = {}\n", .{internal_substeps});
 
-    const sunvec_y = try a.N_VNew_Complex(@intCast(neq), sunctx);
-    defer a.N_VDestroy_Complex(sunvec_y);
-    const y = a.N_VGetCVec(sunvec_y);
-    initializeWavefunction(y);
-
-    var plotter = try Plotter.init(allocator, io);
-    defer plotter.deinit();
-    try plotter.startSeries();
-
+    // Configure ARKODE for fixed-step implicit midpoint evolution.
     var arkode_mem: ?*anyopaque = a.ARKStepCreate(null, Rhs, T0, sunvec_y, sunctx) orelse {
         std.debug.print("ERROR: ARKStepCreate failed\n", .{});
-        return error.SolverSetupFailed;
+        return error.SetupFailed;
     };
     defer a.ARKodeFree(&arkode_mem);
 
+    if (a.ARKodeSetUserData(arkode_mem.?, &simulation) != 0) {
+        std.debug.print("ERROR: ARKodeSetUserData failed\n", .{});
+        return error.SetupFailed;
+    }
     if (a.ARKStepSetTableNum(arkode_mem.?, a.ARKODE_IMPLICIT_MIDPOINT_1_2, a.ARKODE_ERK_NONE) != 0) {
         std.debug.print("ERROR: ARKStepSetTableNum failed\n", .{});
-        return error.SolverSetupFailed;
+        return error.SetupFailed;
     }
 
     const nls = a.SUNNonlinSol_FixedPoint(sunvec_y, 0, sunctx);
     if (nls == null) {
         std.debug.print("ERROR: SUNNonlinSol_FixedPoint failed\n", .{});
-        return error.SolverSetupFailed;
+        return error.SetupFailed;
     }
     defer _ = a.SUNNonlinSolFree(nls);
 
     if (a.ARKodeSetNonlinearSolver(arkode_mem.?, nls) != 0) {
         std.debug.print("ERROR: ARKodeSetNonlinearSolver failed\n", .{});
-        return error.SolverSetupFailed;
+        return error.SetupFailed;
     }
-
     if (a.ARKodeSStolerances(arkode_mem.?, reltol, abstol) != 0) {
         std.debug.print("ERROR: ARKodeSStolerances failed\n", .{});
-        return error.SolverSetupFailed;
+        return error.SetupFailed;
     }
     if (a.ARKodeSetMaxNonlinIters(arkode_mem.?, 20) != 0) {
         std.debug.print("ERROR: ARKodeSetMaxNonlinIters failed\n", .{});
-        return error.SolverSetupFailed;
+        return error.SetupFailed;
     }
 
+    // Set a fixed internal step size and the first requested output time.
     var tcur: f64 = T0;
     const dTout = (Tf - T0) / @as(f64, @floatFromInt(Nt));
     const hfixed = dTout / @as(f64, @floatFromInt(internal_substeps));
     if (a.ARKodeSetFixedStep(arkode_mem.?, hfixed) != 0) {
         std.debug.print("ERROR: ARKodeSetFixedStep failed\n", .{});
-        return error.SolverSetupFailed;
+        return error.SetupFailed;
     }
     var tout = T0 + dTout;
 
-    var diagnostics = computeDiagnostics(y);
-    var filename_buf: [256]u8 = undefined;
+    const y = a.N_VGetCVec(sunvec_y);
+    var diagnostics = simulation.computeDiagnostics(y);
 
+    // Emit the initial diagnostics row and visualization frame.
     std.debug.print("\n step        t            norm         x_mean     y_mean     z_mean    sigma_x   sigma_y   sigma_z   peak|psi|\n", .{});
     std.debug.print("-----------------------------------------------------------------------------------------------------------------\n", .{});
     std.debug.print(" {:>4}  {d:.6}  {d:.10}  {d:.6}  {d:.6}  {d:.6}  {d:.6}  {d:.6}  {d:.6}  {d:.6}\n", .{
@@ -466,10 +825,9 @@ pub fn main(init: std.process.Init) !void {
         diagnostics.sigma_z,
         diagnostics.peak_amp,
     });
+    simulation.save(0, tcur);
 
-    var filename = try std.fmt.bufPrint(&filename_buf, "schrodinger3d_t{d:0>4}.vtu", .{0});
-    try plotter.plot(y, tcur, filename);
-
+    // Advance one output interval at a time, saving diagnostics after each interval.
     for (1..Nt + 1) |step| {
         const ierr = a.ARKodeEvolve(arkode_mem.?, tout, sunvec_y, &tcur, a.ARK_NORMAL);
         if (ierr < 0) {
@@ -477,7 +835,7 @@ pub fn main(init: std.process.Init) !void {
             return error.EvolveFailed;
         }
 
-        diagnostics = computeDiagnostics(y);
+        diagnostics = simulation.computeDiagnostics(y);
         std.debug.print(" {:>4}  {d:.6}  {d:.10}  {d:.6}  {d:.6}  {d:.6}  {d:.6}  {d:.6}  {d:.6}  {d:.6}\n", .{
             step,
             tcur,
@@ -490,16 +848,14 @@ pub fn main(init: std.process.Init) !void {
             diagnostics.sigma_z,
             diagnostics.peak_amp,
         });
-
-        filename = try std.fmt.bufPrint(&filename_buf, "schrodinger3d_t{d:0>4}.vtu", .{step});
-        try plotter.plot(y, tcur, filename);
-
+        simulation.save(step, tcur);
         tout = @min(tout + dTout, Tf);
     }
 
+    // Close with final solver counters and packet diagnostics.
     std.debug.print("-----------------------------------------------------------------------------------------------------------------\n", .{});
     ARKStepStats(arkode_mem.?);
-    std.debug.print("Wrote {} VTU files and schrodinger3d.vtu.series\n", .{plotter.num_plotted});
+    std.debug.print("Wrote ParaView output under schrodinger3d/\n", .{});
     std.debug.print("Final packet center: ({d:.6}, {d:.6}, {d:.6}), norm = {d:.6}\n\n", .{
         diagnostics.x_mean,
         diagnostics.y_mean,

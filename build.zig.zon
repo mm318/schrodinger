@@ -6,13 +6,9 @@
     .minimum_zig_version = "0.16.0",
 
     .dependencies = .{
-        .arkode_zig = .{
-            .url = "https://github.com/mm318/arkode-zig/archive/0be03eda07aa2d9c037e69ca016c0c9626a51822.tar.gz",
-            .hash = "arkode_zig-6.5.0-XTfRtEjupQCln229535KQgfIxVetkCX3RyKV4bNpHIjo",
-        },
-        .vtu_writer = .{
-            .url = "https://github.com/mm318/vtu-writer/archive/f163bed9737d30c48ec0cb8dc94bc23d128309d4.tar.gz",
-            .hash = "vtu_writer-0.0.1-jCl2qaZ9AABW8hXP8xFpjyICdF75Szn-LV-YvBt8qdK_",
+        .mfem = .{
+            .url = "https://github.com/mm318/mfem/archive/66d58c75ef969caa706a13e4e8403979e6b4903d.tar.gz",
+            .hash = "mfem-4.9.0-gNcFhNpKbwGZRlAZgMqDZ9LyjmuWO6Yp6tvUqGyIMWX0",
         },
     },
 

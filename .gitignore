@@ -2,5 +2,6 @@
 zig-pkg/
 zig-out/
 
+schrodinger3d/
 *.vtu
 *.vtu.series
